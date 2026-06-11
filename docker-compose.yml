@@ -23,6 +23,21 @@ services:
     networks:
       - ai_etl_network
 
+  backend:
+    build: ./backend             
+    container_name: ai_etl_backend
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app           
+    environment:
+      - DB_HOST=postgres          
+      - DB_PORT=5432
+    depends_on:
+      - postgres                
+    networks:
+      - ai_etl_network
+
 volumes:
   postgres_data:
 
