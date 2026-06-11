@@ -38,6 +38,19 @@ services:
     networks:
       - ai_etl_network
 
+  data-pipeline:
+    build: ./data-pipeline
+    container_name: ai_etl_pipeline
+    volumes:
+      - ./data-pipeline:/app
+    environment:
+      - DB_HOST=postgres 
+      - DB_PORT=5432
+    depends_on:
+      - postgres
+    networks:
+      - ai_etl_network
+
 volumes:
   postgres_data:
 
