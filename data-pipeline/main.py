@@ -158,13 +158,51 @@ def load_data(articles):
 
     print(f"ETL pipeline executed successfully! Upserted {inserted_count} new records.")
 
+def validate_and_filter_data(articles):
+    """
+    Data Quality Assertion Layer (Data SLA Gate)
+    Audits the transformed batch before loading. Triggers a hard fail-fast melt if rules are breached.
+    """
+    print("Executing Data Quality Audit against Data SLA standards...")
+    
+    if not articles:
+        raise ValueError("Melt Triggered: Extracted batch contains 0 records. Upstream source may be down.")
+
+    total_count = len(articles)
+    clean_articles = []
+    corrupt_articles = []
+
+    for article in articles:
+        is_abstract_valid = article['abstract'] and article['abstract'].strip() != ""
+        is_url_valid = article['url'].startswith("http")
+
+        if is_abstract_valid and is_url_valid:
+            clean_articles.append(article) 
+        else:
+            corrupt_articles.append(article)
+
+    # Calculate metrics for alerting
+    corrupt_count = len(corrupt_articles)
+    empty_ratio = corrupt_count / total_count
+    print(f"[Data Audit Report] Total: {total_count} | Clean: {len(clean_articles)} | Corrupt: {corrupt_count}")
+
+    # SLA Hard Gate: If MORE THAN 10% of data is corrupt, something is fundamentally wrong.
+    # freeze the entire pipeline.
+    if empty_ratio > 0.10:
+        raise RuntimeError(f"Pipeline Circuit Breaker! Corruption rate at {empty_ratio:.2%}, exceeding 10% SLA limit.")
+
+    if corrupt_count > 0:
+        print(f"⚠️ Warning: Filtered out {corrupt_count} corrupt rows. Proceeding with remaining {len(clean_articles)} rows.")
+
+    return clean_articles
 
 if __name__ == "__main__":
     try:
         init_database()
         raw_data = extract_data() 
-        cleansed_datasets = transform_data(raw_data)
-        load_data(cleansed_datasets)
+        cleansed_batch = transform_data(raw_data)
+        cleansed_batch = validate_and_filter_data(cleansed_batch)
+        load_data(cleansed_batch)
         
     except Exception as error:
         print(f"💥 ETL Execution Pipeline Failed: {error}")
