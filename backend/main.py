@@ -64,7 +64,7 @@ def search_articles(q: str = Query(..., min_length=1, description="The search ke
     search_query = f"%{q}%"
     try:
         cursor.execute("""
-            SELECT id, title, url, abstract 
+            SELECT id, title, url, abstract, data_source_version, cleaned_at, llm_model_used
             FROM test_articles 
             WHERE title ILIKE %s OR abstract ILIKE %s
             LIMIT 5;
@@ -95,7 +95,7 @@ def ask_rag(question: str = Query(..., description="Ask a question about AI pape
     # but for simplicity, we'll search the full string first.
     try:
         cursor.execute("""
-            SELECT title, abstract, url 
+            SELECT title, abstract, url, data_source_version, cleaned_at, llm_model_used
             FROM test_articles 
             WHERE title ILIKE %s OR abstract ILIKE %s
             LIMIT 3;

@@ -4,6 +4,8 @@ import xml.etree.ElementTree as ET
 import requests
 import psycopg2
 from dotenv import load_dotenv
+import datetime
+from psycopg2.extras import execute_values
 
 #uoad environment variables from .env file
 load_dotenv()
@@ -17,13 +19,23 @@ DB_PASSWORD = os.getenv("DB_PASSWORD")
 def init_database():
     """create a test table"""
     print("initializing database...")
-    conn = psycopg2.connect(
-        host=DB_HOST,
-        port=DB_PORT,
-        database=DB_NAME,
-        user=DB_USER,
-        password=DB_PASSWORD
-    )
+    retries = 5
+    while retries > 0:
+        try:
+            conn = psycopg2.connect(
+                host=DB_HOST,
+                port=DB_PORT,
+                database=DB_NAME,
+                user=DB_USER,
+                password=DB_PASSWORD
+            )
+            break 
+        except psycopg2.OperationalError as e:
+            retries -= 1
+            print(f"⏳ Database is waking up... waiting. (Retries left: {retries})")
+            if retries == 0:
+                raise e
+            datetime.time.sleep(2)
     cursor = conn.cursor()
     
     cursor.execute("""
@@ -32,7 +44,10 @@ def init_database():
             title TEXT NOT NULL,
             url TEXT UNIQUE NOT NULL,
             abstract TEXT,
-            fetched_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            fetched_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            data_source_version VARCHAR(50) DEFAULT 'v1.0.0',
+            cleaned_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            llm_model_used VARCHAR(50) DEFAULT 'gpt-4o-mini'
         );
     """)
     conn.commit()
@@ -90,6 +105,10 @@ def transform_data(xml_content):
 def load_data(articles):
     """L: Load - Executes batch upserts into the target PostgreSQL relation."""
     print("Loading cleansed datasets into PostgreSQL...")
+    DATA_SOURCE_VERSION = "v1.0.0-arxiv-raw"
+    LLM_MODEL_USED = "gpt-4o-mini"
+    current_time_utc = datetime.datetime.now(datetime.timezone.utc)
+    
     conn = psycopg2.connect(
         host=DB_HOST,
         port=DB_PORT,
@@ -98,24 +117,44 @@ def load_data(articles):
         password=DB_PASSWORD
     )
     cursor = conn.cursor()
+
+    upsert_query = """
+        INSERT INTO test_articles (
+            title, url, abstract, data_source_version, cleaned_at, llm_model_used
+        ) VALUES %s
+        ON CONFLICT (url) DO UPDATE SET
+            title = EXCLUDED.title,
+            abstract = EXCLUDED.abstract,
+            data_source_version = EXCLUDED.data_source_version,
+            cleaned_at = EXCLUDED.cleaned_at,
+            llm_model_used = EXCLUDED.llm_model_used;
+    """
+
+    data_to_insert = []
+    for article in articles:
+        data_tuple = (
+            article['title'],
+            article['url'],
+            article['abstract'],
+            DATA_SOURCE_VERSION,
+            current_time_utc,
+            LLM_MODEL_USED
+        )
+        data_to_insert.append(data_tuple)
     
     inserted_count = 0
-    for article in articles:
-        try:
-            # Handle idempotency using ON CONFLICT DO NOTHING against unique URLs
-            cursor.execute("""
-                INSERT INTO test_articles (title, url, abstract)
-                VALUES (%s, %s, %s)
-                ON CONFLICT (url) DO NOTHING;
-            """, (article['title'], article['url'], article['abstract']))
-            inserted_count += cursor.rowcount
-        except Exception as e:
-            print(f"Failed to insert single record: {e}")
-            conn.rollback()
-            
-    conn.commit()
-    cursor.close()
-    conn.close()
+    try:
+        execute_values(cursor, upsert_query, data_to_insert)
+        inserted_count = len(data_to_insert)
+        conn.commit()
+    except Exception as e:
+        print(f"❌ Batch ingestion failed: {e}")
+        conn.rollback()
+        raise e
+    finally:
+        cursor.close()
+        conn.close()
+
     print(f"ETL pipeline executed successfully! Upserted {inserted_count} new records.")
 
 
