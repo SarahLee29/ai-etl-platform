@@ -6,6 +6,7 @@ from psycopg2.extras import RealDictCursor
 from dotenv import load_dotenv
 from openai import OpenAI
 import uvicorn
+from pydantic import BaseModel
 
 # Load environment variables pointing to the root .env file
 load_dotenv()
@@ -75,10 +76,15 @@ def search_articles(q: str = Query(..., min_length=1, description="The search ke
     finally:
         cursor.close()
         conn.close()
-
+        
+class QueryRequest(BaseModel):
+    question: str
 
 @app.post("/ask")
-def ask_rag(question: str = Query(..., description="Ask a question about AI papers")):
+def ask_rag(
+    payload: QueryRequest, 
+    model_tag: str = Query("gpt-4o-mini", description="Target model for AB testing")
+    ):
     """
     RAG Endpoint: 
     1. Extracts keywords from user question to query PostgreSQL.
@@ -86,13 +92,14 @@ def ask_rag(question: str = Query(..., description="Ask a question about AI pape
     3. Calls the free GPT-4o-mini to generate an answer based ONLY on the context.
     """
     # Simple Keyword Extraction: Use the first few words or the whole question as a search term
-    # For MVP, we pass the question directly into the ILIKE query.
+    # For MVP, pass the question directly into the ILIKE query.
     conn = get_db_connection()
     cursor = conn.cursor()
+    question = payload.question
     search_term = f"%{question}%"
     
-    # If the question is long, let's also split words to try a broader match if needed, 
-    # but for simplicity, we'll search the full string first.
+    # If the question is long, also split words to try a broader match if needed, 
+    # but for simplicity, search the full string first.
     try:
         cursor.execute("""
             SELECT title, abstract, url, data_source_version, cleaned_at, llm_model_used
@@ -107,7 +114,7 @@ def ask_rag(question: str = Query(..., description="Ask a question about AI pape
         cursor.close()
         conn.close()
 
-    # Build the context string from our database records
+    # Build the context string from database records
     context_text = ""
     if matched_papers:
         for i, paper in enumerate(matched_papers, 1):
