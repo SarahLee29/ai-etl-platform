@@ -58,18 +58,23 @@ def home():
 
 
 @app.get("/search")
-def search_articles(q: str = Query(..., min_length=1, description="The search keyword query")):
+def search_articles(
+    q: str = Query(..., min_length=1, description="The search keyword query"),
+    model_tag: str = Query("gpt-4o-mini", description="Filter results by the LLM dynamic partition"),
+    limit: int = Query(5, ge=1, le=50, description="Number of records to return")
+    ):
     """Executes a traditional SQL case-insensitive keyword search."""
     conn = get_db_connection()
-    cursor = conn.cursor()
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
     search_query = f"%{q}%"
     try:
         cursor.execute("""
             SELECT id, title, url, abstract, data_source_version, cleaned_at, llm_model_used
             FROM test_articles 
-            WHERE title ILIKE %s OR abstract ILIKE %s
-            LIMIT 5;
-        """, (search_query, search_query))
+            WHERE llm_model_used = %s 
+              AND (title ILIKE %s OR abstract ILIKE %s)
+            LIMIT %s;
+        """, (model_tag, search_query, search_query, limit))
         return cursor.fetchall()
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Database query failure: {e}")
@@ -94,7 +99,7 @@ def ask_rag(
     # Simple Keyword Extraction: Use the first few words or the whole question as a search term
     # For MVP, pass the question directly into the ILIKE query.
     conn = get_db_connection()
-    cursor = conn.cursor()
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
     question = payload.question
     search_term = f"%{question}%"
     
@@ -104,9 +109,10 @@ def ask_rag(
         cursor.execute("""
             SELECT title, abstract, url, data_source_version, cleaned_at, llm_model_used
             FROM test_articles 
-            WHERE title ILIKE %s OR abstract ILIKE %s
+            WHERE llm_model_used = %s 
+              AND (title ILIKE %s OR abstract ILIKE %s)
             LIMIT 3;
-        """, (search_term, search_term))
+        """, (model_tag, search_term, search_term))
         matched_papers = cursor.fetchall()
     except Exception as e:
         raise HTTPException(status_code=500, detail="Failed to fetch context from database.")
