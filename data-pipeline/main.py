@@ -6,6 +6,7 @@ import psycopg2
 from dotenv import load_dotenv
 import datetime
 from psycopg2.extras import execute_values
+import time
 
 #uoad environment variables from .env file
 load_dotenv()
@@ -35,19 +36,20 @@ def init_database():
             print(f"⏳ Database is waking up... waiting. (Retries left: {retries})")
             if retries == 0:
                 raise e
-            datetime.time.sleep(2)
+            time.sleep(2)
     cursor = conn.cursor()
     
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS test_articles (
             id SERIAL PRIMARY KEY,
             title TEXT NOT NULL,
-            url TEXT UNIQUE NOT NULL,
+            url TEXT NOT NULL,
             abstract TEXT,
             fetched_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             data_source_version VARCHAR(50) DEFAULT 'v1.0.0',
             cleaned_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-            llm_model_used VARCHAR(50) DEFAULT 'gpt-4o-mini'
+            llm_model_used VARCHAR(50) DEFAULT 'gpt-4o-mini',
+            CONSTRAINT unique_url_per_model UNIQUE (url, llm_model_used)
         );
     """)
     conn.commit()
@@ -106,7 +108,7 @@ def load_data(articles):
     """L: Load - Executes batch upserts into the target PostgreSQL relation."""
     print("Loading cleansed datasets into PostgreSQL...")
     DATA_SOURCE_VERSION = "v1.0.0-arxiv-raw"
-    LLM_MODEL_USED = "gpt-4o-mini"
+    LLM_MODEL_USED = "gpt-4o-mini" 
     current_time_utc = datetime.datetime.now(datetime.timezone.utc)
     
     conn = psycopg2.connect(
@@ -122,12 +124,11 @@ def load_data(articles):
         INSERT INTO test_articles (
             title, url, abstract, data_source_version, cleaned_at, llm_model_used
         ) VALUES %s
-        ON CONFLICT (url) DO UPDATE SET
+        ON CONFLICT (url, llm_model_used) DO UPDATE SET
             title = EXCLUDED.title,
             abstract = EXCLUDED.abstract,
             data_source_version = EXCLUDED.data_source_version,
-            cleaned_at = EXCLUDED.cleaned_at,
-            llm_model_used = EXCLUDED.llm_model_used;
+            cleaned_at = EXCLUDED.cleaned_at;
     """
 
     data_to_insert = []

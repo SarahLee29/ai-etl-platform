@@ -52,6 +52,8 @@ services:
       - postgres
     networks:
       - ai_etl_network
+    env_file:
+      - ./data-pipeline/.env
 
 volumes:
   postgres_data:
