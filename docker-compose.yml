@@ -15,7 +15,7 @@ services:
     networks:
       - ai_etl_network
     env_file:
-      - ./data-pipeline/.env
+      - ./.env
 
   redis:
     image: redis:7.2-alpine
@@ -39,6 +39,8 @@ services:
       - postgres                
     networks:
       - ai_etl_network
+    env_file:
+      - ./.env
 
   data-pipeline:
     build: ./data-pipeline
@@ -53,7 +55,7 @@ services:
     networks:
       - ai_etl_network
     env_file:
-      - ./data-pipeline/.env
+      - ./.env
 
 volumes:
   postgres_data:
