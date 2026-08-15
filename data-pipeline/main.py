@@ -48,7 +48,7 @@ def init_database():
             fetched_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             data_source_version VARCHAR(50) DEFAULT 'v1.0.0',
             cleaned_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-            llm_model_used VARCHAR(50) DEFAULT 'gpt-4o-mini',
+            llm_model_used VARCHAR(50) NOT NULL DEFAULT 'none',
             CONSTRAINT unique_url_per_model UNIQUE (url, llm_model_used)
         );
     """)
@@ -107,8 +107,7 @@ def transform_data(xml_content):
 def load_data(articles):
     """L: Load - Executes batch upserts into the target PostgreSQL relation."""
     print("Loading cleansed datasets into PostgreSQL...")
-    DATA_SOURCE_VERSION = "v1.0.0-arxiv-raw"
-    LLM_MODEL_USED = "gpt-4o-mini" 
+    DATA_SOURCE_VERSION = "v1.0.0-raw"
     current_time_utc = datetime.datetime.now(datetime.timezone.utc)
     
     conn = psycopg2.connect(
@@ -122,7 +121,7 @@ def load_data(articles):
 
     upsert_query = """
         INSERT INTO test_articles (
-            title, url, abstract, data_source_version, cleaned_at, llm_model_used
+            title, url, abstract, data_source_version, fetched_at,cleaned_at, llm_model_used
         ) VALUES %s
         ON CONFLICT (url, llm_model_used) DO UPDATE SET
             title = EXCLUDED.title,
@@ -139,7 +138,8 @@ def load_data(articles):
             article['abstract'],
             DATA_SOURCE_VERSION,
             current_time_utc,
-            LLM_MODEL_USED
+            current_time_utc,
+            'none'
         )
         data_to_insert.append(data_tuple)
     
@@ -161,7 +161,7 @@ def load_data(articles):
 def validate_and_filter_data(articles):
     """
     Data Quality Assertion Layer (Data SLA Gate)
-    Audits the transformed batch before loading. Triggers a hard fail-fast melt if rules are breached.
+    Audits the transformed batch before loading. Triggers a melt if rules are breached.
     """
     print("Executing Data Quality Audit against Data SLA standards...")
     
