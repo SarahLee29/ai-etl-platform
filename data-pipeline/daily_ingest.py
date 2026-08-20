@@ -8,6 +8,7 @@ import datetime
 from psycopg2.extras import execute_values
 import time
 from email.utils import parsedate_to_datetime
+from psycopg2.extensions import connection as PostgreSQLConnection
 
 load_dotenv()
 DB_HOST = os.getenv("DB_HOST")
@@ -17,7 +18,7 @@ DB_USER = os.getenv("DB_USER")
 DB_PASSWORD = os.getenv("DB_PASSWORD") 
 
 
-def get_db_connection():
+def get_db_connection()-> PostgreSQLConnection:
     """Establishes and returns a connection to PostgreSQL with retry logic."""
     retries = 5
     while retries > 0:
@@ -36,6 +37,7 @@ def get_db_connection():
             if retries == 0:
                 raise e
             time.sleep(2)
+    raise RuntimeError("Unable to establish PostgreSQL connection.")
 
 
 def extract_data():
@@ -212,3 +214,57 @@ def validate_and_filter_data(articles):
         )
 
     return clean_articles
+
+def load_data(articles):
+    """
+    L: Load - Executes Idempotent Batch Upserts into `arxiv_documents`.
+    """
+    print("[Load] Streaming ingested records into `arxiv_documents` table...")
+
+    if not articles:
+        print("[Load] No valid articles to load.")
+        return
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    upsert_query = """
+        INSERT INTO arxiv_documents (
+            paper_id, title, abstract, authors, categories, url, published_date, published_year
+        ) VALUES %s
+        ON CONFLICT (paper_id) DO UPDATE SET
+            title = EXCLUDED.title,
+            abstract = EXCLUDED.abstract,
+            authors = EXCLUDED.authors,
+            categories = EXCLUDED.categories,
+            url = EXCLUDED.url,
+            published_date = EXCLUDED.published_date,
+            published_year = EXCLUDED.published_year,
+            ingested_at = CURRENT_TIMESTAMP;
+    """
+
+    data_to_insert = [
+        (
+            article['paper_id'],
+            article['title'],
+            article['abstract'],
+            article['authors'],
+            article['categories'],
+            article['url'],
+            article['published_date'],
+            article['published_year']
+        )
+        for article in articles
+    ]
+
+    try:
+        execute_values(cursor, upsert_query, data_to_insert)
+        conn.commit()
+        print(f"🎉 [Load] Pipeline Executed Successfully! Idempotently upserted {len(data_to_insert)} records.")
+    except Exception as e:
+        conn.rollback()
+        print(f"❌ [Load] Batch Ingestion to `arxiv_documents` failed: {e}")
+        raise 
+    finally:
+        cursor.close()
+        conn.close()
