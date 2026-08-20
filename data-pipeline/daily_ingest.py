@@ -98,35 +98,33 @@ def transform_data(xml_content):
     }
 
     for item in root.findall('.//item'):
-        # 1. Parse Title
-        title_node = item.find('title')
-        raw_title = title_node.text.strip() if title_node is not None else "" # type: ignore
-        clean_title = raw_title
 
-        # 2. Parse Link, GUID, and paper_id
-        link_node = item.find('link')
-        link = link_node.text.strip() if link_node is not None else "" # type: ignore
-        
-        guid_node = item.find('guid')
-        guid_text = guid_node.text.strip() if guid_node is not None else "" # type: ignore
+        title_node = item.find('title')
+        clean_title = (title_node.text or "").strip() if title_node is not None else ""
+
+        link_node = item.find("link")
+        link = (link_node.text or "").strip() if link_node is not None else ""
+
+        guid_node = item.find("guid")
+        guid_text = (guid_node.text or "").strip() if guid_node is not None else ""
         
         paper_id = parse_paper_id(guid_text, link)
 
-        # 3. Clean Abstract (Remove "arXiv:2608.18078v1 Announce Type: new \nAbstract: ")
-        desc_node = item.find('description')
-        raw_desc = desc_node.text if desc_node is not None else "" # type: ignore
+        desc_node = item.find("description")
+        raw_desc = (desc_node.text or "") if desc_node is not None else ""
         
-        # Regex removes the ArXiv RSS header prefix up to 'Abstract:'
-        clean_abstract = re.sub(r'^arXiv:.*?\bAbstract:\s*', '', raw_desc, flags=re.DOTALL) # type: ignore
-        clean_abstract = re.sub(r'<[^>]+>', '', clean_abstract).strip()
-        clean_abstract = clean_abstract.replace('\n', ' ')
+        clean_abstract = re.sub(
+            r"^arXiv:.*?\bAbstract:\s*",
+            "",
+            raw_desc,
+            flags=re.DOTALL,
+        )
+        clean_abstract = re.sub(r"<[^>]+>", "", clean_abstract)
+        clean_abstract = re.sub(r"\s+", " ", clean_abstract).strip()
 
-        # 4. Parse Authors (<dc:creator>)
         creator_node = item.find('dc:creator', namespaces)
-        authors = creator_node.text.strip() if creator_node is not None else "" # type: ignore
+        authors = (creator_node.text or "").strip() if creator_node is not None else ""
 
-        # 5. Parse Primary Category
-        cat_node = item.find('category')
         categories = ", ".join(
             category.text.strip()
             for category in item.findall("category")
@@ -135,20 +133,82 @@ def transform_data(xml_content):
 
         # 6. Parse Published Date & Year (<pubDate>)
         pub_date_node = item.find('pubDate')
-        pub_date_str = pub_date_node.text.strip() if pub_date_node is not None else "" # type: ignore
+        pub_date_str = (pub_date_node.text or "").strip() if pub_date_node is not None else "" # type: ignore
         published_date, published_year = parse_pub_date(pub_date_str)
 
-        if paper_id and link and clean_title and clean_abstract:
-            articles.append({
-                "paper_id": paper_id,
-                "title": clean_title,
-                "abstract": clean_abstract,
-                "authors": authors,
-                "categories": categories,
-                "url": link,
-                "published_date": published_date,
-                "published_year": published_year
-            })
+        articles.append({
+            "paper_id": paper_id,
+            "title": clean_title,
+            "abstract": clean_abstract,
+            "authors": authors or None,
+            "categories": categories or None,
+            "url": link,
+            "published_date": published_date,
+            "published_year": published_year,
+        })
             
     print(f"✅ [Transform] Successfully transformed {len(articles)} daily paper records.")
     return articles
+
+def validate_and_filter_data(articles):
+    """
+    Data SLA Gate: Validate transformed records before database write.
+    """
+    print("[SLA Gate] Performing Data Quality Audits...")
+
+    if not articles:
+        raise ValueError(
+            "SLA Gate Violation: Extracted daily batch contains 0 records."
+        )
+
+    total_count = len(articles)
+    clean_articles = []
+    corrupt_count = 0
+
+    for article in articles:
+        paper_id = str(article.get("paper_id") or "").strip()
+        title = str(article.get("title") or "").strip()
+        abstract = str(article.get("abstract") or "").strip()
+        url = str(article.get("url") or "").strip()
+
+        is_id_valid = bool(paper_id) and len(paper_id) <= 64
+        is_title_valid = bool(title)
+        is_abstract_valid = bool(abstract) and len(abstract) >= 20
+        is_url_valid = url.startswith("https://arxiv.org/")
+
+        if (
+            is_id_valid
+            and is_title_valid
+            and is_abstract_valid
+            and is_url_valid
+        ):
+            clean_article = article.copy()
+            clean_article["paper_id"] = paper_id
+            clean_article["title"] = title
+            clean_article["abstract"] = abstract
+            clean_article["url"] = url
+            clean_articles.append(clean_article)
+        else:
+            corrupt_count += 1
+
+    corruption_rate = corrupt_count / total_count
+
+    print(
+        f"[SLA Audit Report] Total: {total_count} | "
+        f"Clean: {len(clean_articles)} | "
+        f"Corrupt: {corrupt_count}"
+    )
+
+    if corruption_rate > 0.10:
+        raise RuntimeError(
+            f"Pipeline Circuit Breaker: corruption rate "
+            f"{corruption_rate:.2%} exceeds 10% SLA limit."
+        )
+
+    if corrupt_count:
+        print(
+            f"[SLA Warning] Filtered out "
+            f"{corrupt_count} corrupt records."
+        )
+
+    return clean_articles
