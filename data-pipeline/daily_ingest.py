@@ -1,21 +1,13 @@
-import os
 import re
 import xml.etree.ElementTree as ET
 import requests
 import psycopg2
-from dotenv import load_dotenv
-import datetime
 from psycopg2.extras import execute_values
 import time
 from email.utils import parsedate_to_datetime
 from psycopg2.extensions import connection as PostgreSQLConnection
 
-load_dotenv()
-DB_HOST = os.getenv("DB_HOST")
-DB_PORT = os.getenv("DB_PORT")
-DB_NAME = os.getenv("DB_NAME")
-DB_USER = os.getenv("DB_USER")
-DB_PASSWORD = os.getenv("DB_PASSWORD") 
+from config import settings
 
 
 def get_db_connection()-> PostgreSQLConnection:
@@ -23,14 +15,14 @@ def get_db_connection()-> PostgreSQLConnection:
     retries = 5
     while retries > 0:
         try:
-            conn = psycopg2.connect(
-                host=DB_HOST,
-                port=DB_PORT,
-                database=DB_NAME,
-                user=DB_USER,
-                password=DB_PASSWORD
+            return psycopg2.connect(
+                host=settings.db_host,
+                port=settings.db_port,
+                database=settings.db_name,
+                user=settings.db_user,
+                password=settings.db_password,
             )
-            return conn
+     
         except psycopg2.OperationalError as e:
             retries -= 1
             print(f"⏳ Waiting for PostgreSQL database... (Retries left: {retries})")
@@ -43,7 +35,7 @@ def get_db_connection()-> PostgreSQLConnection:
 def extract_data():
     """E: Extract - extract AI articles from ArXiv RSS"""
     print("[Extract] Fetching daily papers from ArXiv RSS (cs)...")
-    url = "https://rss.arxiv.org/rss/cs"
+    url = settings.rss_url
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
     
     response = requests.get(url, headers=headers, timeout=10)
@@ -201,7 +193,7 @@ def validate_and_filter_data(articles):
         f"Corrupt: {corrupt_count}"
     )
 
-    if corruption_rate > 0.10:
+    if corruption_rate > settings.max_error_rate_daily:
         raise RuntimeError(
             f"Pipeline Circuit Breaker: corruption rate "
             f"{corruption_rate:.2%} exceeds 10% SLA limit."
