@@ -84,8 +84,59 @@ def extract_historical_data(spark: SparkSession, file_path: str) -> DataFrame:
     except Exception as e:
         print(f"❌ Failed to extract data from {file_path}. Error: {str(e)}")
         raise e
-    
+
+def transform_data(df: DataFrame) -> DataFrame:
+    """
+    Cleans LaTeX linebreaks, builds deterministic URLs, extracts structured authors,
+    and formats timestamps for downstream DB ingestion.
+    """
+    print("[Transform] Executing columnar text cleansing...")
+
+    multiline_whitespace_pattern = r"[\r\n\t]+"
+    consecutive_spaces_pattern = r"\s+"
+
+    transformed_df = (
+        df
+        .withColumnRenamed("id", "paper_id")
+        .withColumn("url", F.concat(F.lit("https://arxiv.org/abs/"), F.col("paper_id")))
+        .withColumn("title", F.regexp_replace(F.col("title"), multiline_whitespace_pattern, " "))
+        .withColumn("title", F.regexp_replace(F.col("title"), consecutive_spaces_pattern, " "))
+        .withColumn("title", F.trim(F.col("title")))
+        .withColumn("abstract", F.regexp_replace(F.col("abstract"), multiline_whitespace_pattern, " "))
+        .withColumn("abstract", F.regexp_replace(F.col("abstract"), consecutive_spaces_pattern, " "))
+        .withColumn("abstract", F.trim(F.col("abstract")))
+        .withColumn("categories", F.regexp_replace(F.trim(F.col("categories")), consecutive_spaces_pattern, ", "))        
+        .withColumn(
+            "clean_authors", F.expr("array_join(transform(authors_parsed, x -> trim(concat(coalesce(x[1], ''), ' ', coalesce(x[0], '')))), ', ')")
+        )
+        .withColumn("published_date", F.to_date(F.col("update_date"), "yyyy-MM-dd"))
+        .withColumn("published_year", F.year(F.col("published_date")))
+        .withColumn("ingested_at", F.current_timestamp())
+
+        .select(
+            F.col("paper_id"),
+            F.col("title"),
+            F.col("abstract"),
+            F.coalesce(F.col("clean_authors"), F.col("authors")).alias("authors"),
+            F.col("categories"),
+            F.col("url"),
+            F.col("published_date"),
+            F.col("published_year"),
+            F.col("ingested_at")
+        )
+    )
+
+    return transformed_df    
+
+
 
 if __name__ == "__main__":
     spark = create_spark_session()
-    extract_historical_data(spark, "/app/data/part_of_arxiv_history.json")
+
+    raw_df = extract_historical_data(spark, "/app/data/part_of_arxiv_history.json")
+    raw_output_path = "/app/data/raw_preview"
+    raw_df.coalesce(1).write.mode("overwrite").json(raw_output_path)
+
+    transformed_df = transform_data(raw_df)
+    transformed_output_path = "/app/data/transformed_preview"
+    transformed_df.coalesce(1).write.mode("overwrite").json(transformed_output_path)
