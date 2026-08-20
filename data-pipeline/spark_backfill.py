@@ -172,6 +172,21 @@ def apply_sla_gate_and_circuit_breaker(df: DataFrame, dlq_output_path: str, max_
     print("✅ [SLA Gate] SLA checks passed successfully!")
     return valid_df
 
+def load_to_data_lake(df: DataFrame, output_path: str):
+    """
+    Writes clean records to Parquet Data Lake, partitioned by year for optimal query pruning.
+    """
+    print(f"[Load] Persisting clean dataset to Parquet Data Lake at: {output_path}")
+
+    (
+        df.write
+        .mode("overwrite")
+        .partitionBy("published_year")
+        .parquet(output_path)
+    )
+    print("✅ [Load] Data successfully written to Partitioned Parquet Lake!")
+
+
 if __name__ == "__main__":
     spark = create_spark_session()
 
