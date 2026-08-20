@@ -5,20 +5,15 @@ from typing import Tuple
 from dotenv import load_dotenv
 import json
 
+import re
+import psycopg2
+from psycopg2 import sql
+
 from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql import functions as F
 from pyspark.sql.types import StructType, StructField, StringType, ArrayType
 
-load_dotenv()
-DB_HOST = os.getenv("DB_HOST")
-DB_PORT = os.getenv("DB_PORT")
-DB_NAME = os.getenv("DB_NAME")
-DB_USER = os.getenv("DB_USER")
-DB_PASSWORD = os.getenv("DB_PASSWORD") 
-
-JDBC_URL = f"jdbc:postgresql://{DB_HOST}:{DB_PORT}/{DB_NAME}"
-JDBC_DRIVER = "org.postgresql.Driver"
-TARGET_TABLE = "history_articles"
+from config import settings
 
 def create_spark_session() -> SparkSession:
     """
@@ -26,15 +21,19 @@ def create_spark_session() -> SparkSession:
     the PostgreSQL JDBC driver and setting JVM memory parameters.
     """
     print("Initializing SparkSession...")
-    
-    postgres_jar_maven = "org.postgresql:postgresql:42.7.3"
 
     spark = (
         SparkSession.builder
         .appName("ArXiv_Historical_Backfill_ETL")        
-        .config("spark.jars.packages", postgres_jar_maven)  # Dynamically load Postgres JDBC driver package
-        .config("spark.driver.memory", "4g")
-        .config("spark.executor.memory", "4g")
+        .config("spark.jars.packages", settings.postgres_jar_maven)  # Dynamically load Postgres JDBC driver package
+        .config(
+            "spark.driver.memory",
+            settings.spark_driver_memory,
+        )
+        .config(
+            "spark.executor.memory",
+            settings.spark_executor_memory,
+        )
         # Enable PyArrow for efficient column-level operations and JVM-Python serialization
         .config("spark.sql.execution.arrow.pyspark.enabled", "true")     
         .master("local[*]") # Bind master to local mode using all available CPU cores
@@ -76,9 +75,8 @@ def extract_historical_data(spark: SparkSession, file_path: str) -> DataFrame:
 
     schema = define_arxiv_schema()
     try:
-        df = spark.read.schema(schema).option("multiline", "true").json(file_path)
+        df = spark.read.schema(schema).json(file_path)
         print(f"✅ Data extracted successfully! Initial record count: {df.count()}")
-        df.show()
         return df
 
     except Exception as e:
@@ -128,7 +126,7 @@ def transform_data(df: DataFrame) -> DataFrame:
 
     return transformed_df    
 
-def apply_sla_gate_and_circuit_breaker(df: DataFrame, dlq_output_path: str, max_error_threshold: float = 0.01) -> DataFrame:
+def apply_sla_gate_and_circuit_breaker(df: DataFrame, dlq_output_path: str) -> DataFrame:
     """
     Validates data quality SLAs. Routes invalid records to Dead-Letter Queue (DLQ).
     Triggers Circuit Breaker if corruption rate exceeds the allowed threshold.
@@ -164,8 +162,8 @@ def apply_sla_gate_and_circuit_breaker(df: DataFrame, dlq_output_path: str, max_
         )
 
     # Circuit Breaker Verification
-    if error_rate > max_error_threshold:
-        error_msg = f"[Circuit Breaker Triggered] SLA Violation! Error rate {error_rate:.2%} exceeds threshold ({max_error_threshold:.2%}). Pipeline terminated."
+    if error_rate > settings.max_error_rate_backfill:
+        error_msg = f"[Circuit Breaker Triggered] SLA Violation! Error rate {error_rate:.2%} exceeds threshold ({settings.max_error_rate_backfill}). Pipeline terminated."
         print(error_msg)
         raise ValueError(error_msg)
 
@@ -197,34 +195,136 @@ def load_to_postgres(
     Loads Parquet/Clean DataFrame into PostgreSQL using parallel JDBC execution.
     Tunes JDBC batch options to maximize PostgreSQL insert throughput.
     """
-    print(f"[Load] Streaming clean records to PostgreSQL table '{pg_table}'...")
+
+    if df.isEmpty():
+        print("[Load] No valid records to write to PostgreSQL.")
+        return
+
+    stage_table = f"{pg_table}_backfill_stage"
+    
+    print(f"[Load] Preparing {df.count()} records for PostgreSQL table '{stage_table}'...")
+
+    staged_df = (
+            df.select(
+                "paper_id",
+                "title",
+                "abstract",
+                "authors",
+                "categories",
+                "url",
+                "published_date",
+                "published_year",
+                "ingested_at",
+            )
+            .dropDuplicates(["paper_id"])
+            .repartition(num_partitions)
+        )
+
+    print(f"[Load] Writing records to staging table {stage_table}")
 
     try:
-        partitioned_df = df.repartition(num_partitions)
-
-        (
-            partitioned_df.write
-            .format("jdbc")
-            .option("url", pg_url)
-            .option("dbtable", pg_table)
-            .option("user", pg_properties["user"])
-            .option("password", pg_properties["password"])
-            .option("driver", "org.postgresql.Driver")
-    
-            .option("batchsize", "10000")                
-            .option("isolationLevel", "READ_COMMITTED")
-            .option("rewriteBatchedInserts", "true")     
-            
-            .mode("append")                            
-            .save()
-        )
-        print(f"✅ [Load] Successfully ingested data into PostgreSQL table: '{pg_table}'!")
+       (
+        staged_df.write
+        .format("jdbc")
+        .option("url", pg_url)
+        .option("dbtable", stage_table)
+        .option("user", pg_properties["user"])
+        .option("password", pg_properties["password"])
+        .option("driver", "org.postgresql.Driver")
+        .option("batchsize", "10000")
+        .option("isolationLevel", "READ_COMMITTED")
+        .mode("overwrite")
+        .save()
+        ) 
+         
+       print(f"✅ [Load] Successfully ingested data into staging table: '{stage_table}'!")
 
     except Exception as e:
         print(f"❌ [Load] PostgreSQL JDBC ingestion failed. Error: {str(e)}")
         raise e
 
-def run_pipeline(
+    print(f"[Load] Upsert records to target table {pg_table}")
+
+    conn = None
+    cursor = None
+
+    try:
+        conn = psycopg2.connect(
+            host=settings.db_host,
+            port=settings.db_port,
+            database=settings.db_name,
+            user=pg_properties["user"],
+            password=pg_properties["password"],
+        )
+        cursor = conn.cursor()
+
+        merge_query = sql.SQL(
+            """
+            INSERT INTO {target} (
+                paper_id,
+                title,
+                abstract,
+                authors,
+                categories,
+                url,
+                published_date,
+                published_year,
+                ingested_at
+            )
+            SELECT
+                paper_id,
+                title,
+                abstract,
+                authors,
+                categories,
+                url,
+                published_date,
+                published_year,
+                ingested_at
+            FROM {stage}
+            ON CONFLICT (paper_id) DO UPDATE SET
+                title = EXCLUDED.title,
+                abstract = EXCLUDED.abstract,
+                authors = EXCLUDED.authors,
+                categories = EXCLUDED.categories,
+                url = EXCLUDED.url,
+                published_date = EXCLUDED.published_date,
+                published_year = EXCLUDED.published_year,
+                ingested_at = EXCLUDED.ingested_at;
+            """
+        ).format(
+            target=sql.Identifier(pg_table),
+            stage=sql.Identifier(stage_table),
+        )
+
+        cursor.execute(merge_query)
+        conn.commit()
+
+        print(f"✅ [Load] Successfully upserted backfill records into '{pg_table}'." )      
+
+        cursor.execute(
+            sql.SQL("DROP TABLE IF EXISTS {stage};").format(
+                stage=sql.Identifier(stage_table),
+            )
+        )
+        conn.commit()
+
+    except Exception as error:
+        if conn is not None:
+            conn.rollback()
+
+        print(
+            f"❌ [Load] PostgreSQL upsert failed for '{pg_table}': {error}")
+        raise
+
+    finally:
+        if cursor is not None:
+            cursor.close()
+        if conn is not None:
+            conn.close()
+
+
+def run_backfill_pipeline(
     input_json_path: str, 
     parquet_output_path: str, 
     dlq_path: str,
@@ -239,8 +339,7 @@ def run_pipeline(
 
         clean_df = apply_sla_gate_and_circuit_breaker(
             transformed_df, 
-            dlq_output_path=dlq_path, 
-            max_error_threshold=0.01
+            dlq_output_path=dlq_path
         )
 
         load_to_data_lake(clean_df, parquet_output_path)
@@ -250,7 +349,7 @@ def run_pipeline(
             pg_url=pg_config["url"],
             pg_table=pg_config["table"],
             pg_properties=pg_config["properties"],
-            num_partitions=4
+            num_partitions=settings.spark_partitions
         )
 
     except Exception as e:
@@ -261,19 +360,19 @@ def run_pipeline(
         print("Spark Session Terminated.")
 
 if __name__ == "__main__":
-    input_json_path = "/app/data/part_of_arxiv_history.json"
-    parquet_output_path = "/app/datalake/silver/arxiv"
-    dlq_path = "/app/datalake/dlq/arxiv"
+    input_json_path = settings.raw_data_path
+    parquet_output_path = settings.datalake_path
+    dlq_path = settings.dlq_path
 
     pg_config = {
-        "url": f"jdbc:postgresql://{DB_HOST}:{DB_PORT}/{DB_NAME}",
-        "table": "arxiv_documents",
+        "url": settings.jdbc_url,
+        "table": settings.target_table,
         "properties": {
-            "user": DB_USER,
-            "password": DB_PASSWORD
-        }
+            "user": settings.db_user,
+            "password": settings.db_password,
+        },
     }
-    run_pipeline(
+    run_backfill_pipeline(
         input_json_path=input_json_path,
         parquet_output_path=parquet_output_path,
         dlq_path=dlq_path,
