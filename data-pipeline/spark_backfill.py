@@ -186,14 +186,32 @@ def load_to_data_lake(df: DataFrame, output_path: str):
     )
     print("✅ [Load] Data successfully written to Partitioned Parquet Lake!")
 
-
-if __name__ == "__main__":
+def run_pipeline(input_json_path: str, parquet_output_path: str, dlq_path: str):
     spark = create_spark_session()
 
-    raw_df = extract_historical_data(spark, "/app/data/part_of_arxiv_history.json")
-    raw_output_path = "/app/data/raw_preview"
-    raw_df.coalesce(1).write.mode("overwrite").json(raw_output_path)
+    try:
+        raw_df = extract_historical_data(spark, input_json_path)
 
-    transformed_df = transform_data(raw_df)
-    transformed_output_path = "/app/data/transformed_preview"
-    transformed_df.coalesce(1).write.mode("overwrite").json(transformed_output_path)
+        transformed_df = transform_data(raw_df)
+
+        clean_df = apply_sla_gate_and_circuit_breaker(
+            transformed_df, 
+            dlq_output_path=dlq_path, 
+            max_error_threshold=0.01  # 1% Threshold
+        )
+
+        load_to_data_lake(clean_df, parquet_output_path)
+
+    except Exception as e:
+        print(f"❌ Pipeline Execution Failed: {str(e)}")
+        sys.exit(1)
+    finally:
+        spark.stop()
+        print("Spark Session Terminated.")
+
+if __name__ == "__main__":
+    input_data_path = "/app/data/part_of_arxiv_history.json"
+    parquet_output_path = "/app/datalake/silver/arxiv"
+    dlq_path = "/app/datalake/dlq/arxiv"
+
+    run_pipeline(input_data_path, parquet_output_path, dlq_path)
