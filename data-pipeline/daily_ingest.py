@@ -268,3 +268,17 @@ def load_data(articles):
     finally:
         cursor.close()
         conn.close()
+
+def run_daily_pipeline() -> None:
+    """Run the daily ArXiv RSS ingestion pipeline."""
+    print("[Pipeline] Starting daily ingestion...")
+
+    raw_data = extract_data()
+    transformed_articles = transform_data(raw_data)
+    clean_articles = validate_and_filter_data(transformed_articles)
+    load_data(clean_articles)
+
+    print("[Pipeline] Daily ingestion completed successfully.")
+
+if __name__ == "__main__":
+    run_daily_pipeline()
