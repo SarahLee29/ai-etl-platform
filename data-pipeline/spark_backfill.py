@@ -185,8 +185,51 @@ def load_to_data_lake(df: DataFrame, output_path: str):
         .parquet(output_path)
     )
     print("✅ [Load] Data successfully written to Partitioned Parquet Lake!")
+    
+def load_to_postgres(
+    df: DataFrame, 
+    pg_url: str, 
+    pg_table: str, 
+    pg_properties: dict,
+    num_partitions: int = 8
+):
+    """
+    Loads Parquet/Clean DataFrame into PostgreSQL using parallel JDBC execution.
+    Tunes JDBC batch options to maximize PostgreSQL insert throughput.
+    """
+    print(f"[Load] Streaming clean records to PostgreSQL table '{pg_table}'...")
 
-def run_pipeline(input_json_path: str, parquet_output_path: str, dlq_path: str):
+    try:
+        partitioned_df = df.repartition(num_partitions)
+
+        (
+            partitioned_df.write
+            .format("jdbc")
+            .option("url", pg_url)
+            .option("dbtable", pg_table)
+            .option("user", pg_properties["user"])
+            .option("password", pg_properties["password"])
+            .option("driver", "org.postgresql.Driver")
+    
+            .option("batchsize", "10000")                
+            .option("isolationLevel", "READ_COMMITTED")
+            .option("rewriteBatchedInserts", "true")     
+            
+            .mode("append")                            
+            .save()
+        )
+        print(f"✅ [Load] Successfully ingested data into PostgreSQL table: '{pg_table}'!")
+
+    except Exception as e:
+        print(f"❌ [Load] PostgreSQL JDBC ingestion failed. Error: {str(e)}")
+        raise e
+
+def run_pipeline(
+    input_json_path: str, 
+    parquet_output_path: str, 
+    dlq_path: str,
+    pg_config: dict
+):
     spark = create_spark_session()
 
     try:
@@ -197,10 +240,18 @@ def run_pipeline(input_json_path: str, parquet_output_path: str, dlq_path: str):
         clean_df = apply_sla_gate_and_circuit_breaker(
             transformed_df, 
             dlq_output_path=dlq_path, 
-            max_error_threshold=0.01  # 1% Threshold
+            max_error_threshold=0.01
         )
 
         load_to_data_lake(clean_df, parquet_output_path)
+
+        load_to_postgres(
+            df=clean_df,
+            pg_url=pg_config["url"],
+            pg_table=pg_config["table"],
+            pg_properties=pg_config["properties"],
+            num_partitions=4
+        )
 
     except Exception as e:
         print(f"❌ Pipeline Execution Failed: {str(e)}")
@@ -210,8 +261,21 @@ def run_pipeline(input_json_path: str, parquet_output_path: str, dlq_path: str):
         print("Spark Session Terminated.")
 
 if __name__ == "__main__":
-    input_data_path = "/app/data/part_of_arxiv_history.json"
+    input_json_path = "/app/data/part_of_arxiv_history.json"
     parquet_output_path = "/app/datalake/silver/arxiv"
     dlq_path = "/app/datalake/dlq/arxiv"
 
-    run_pipeline(input_data_path, parquet_output_path, dlq_path)
+    pg_config = {
+        "url": f"jdbc:postgresql://{DB_HOST}:{DB_PORT}/{DB_NAME}",
+        "table": "arxiv_documents",
+        "properties": {
+            "user": DB_USER,
+            "password": DB_PASSWORD
+        }
+    }
+    run_pipeline(
+        input_json_path=input_json_path,
+        parquet_output_path=parquet_output_path,
+        dlq_path=dlq_path,
+        pg_config=pg_config
+    )
