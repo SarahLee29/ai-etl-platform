@@ -128,7 +128,49 @@ def transform_data(df: DataFrame) -> DataFrame:
 
     return transformed_df    
 
+def apply_sla_gate_and_circuit_breaker(df: DataFrame, dlq_output_path: str, max_error_threshold: float = 0.01) -> DataFrame:
+    """
+    Validates data quality SLAs. Routes invalid records to Dead-Letter Queue (DLQ).
+    Triggers Circuit Breaker if corruption rate exceeds the allowed threshold.
+    """
+    print("[SLA Gate] Evaluating record quality SLAs...")
 
+    # Define SLA conditions for valid records
+    valid_condition = (
+        F.col("paper_id").isNotNull() &
+        F.col("title").isNotNull() & (F.length(F.col("title")) > 0) &
+        F.col("abstract").isNotNull() & (F.length(F.col("abstract")) >= 20)
+    )
+
+    # Split dataset into Valid Stream and Invalid Stream
+    valid_df = df.filter(valid_condition).cache()
+    invalid_df = df.filter(~valid_condition).cache()
+
+    total_count = df.count()
+    invalid_count = invalid_df.count()
+    valid_count = valid_df.count()
+
+    error_rate = (invalid_count / total_count) if total_count > 0 else 0.0
+
+    print(f"[SLA Gate Metrics] Total: {total_count} | Valid: {valid_count} | Bad: {invalid_count} | Error Rate: {error_rate:.2%}")
+
+    # Process Dead-Letter Queue if bad records exist
+    if invalid_count > 0:
+        print(f"[DLQ] Routing {invalid_count} invalid records to Dead-Letter Queue at {dlq_output_path}")
+        (
+            invalid_df.write
+            .mode("append")
+            .parquet(dlq_output_path)
+        )
+
+    # Circuit Breaker Verification
+    if error_rate > max_error_threshold:
+        error_msg = f"[Circuit Breaker Triggered] SLA Violation! Error rate {error_rate:.2%} exceeds threshold ({max_error_threshold:.2%}). Pipeline terminated."
+        print(error_msg)
+        raise ValueError(error_msg)
+
+    print("✅ [SLA Gate] SLA checks passed successfully!")
+    return valid_df
 
 if __name__ == "__main__":
     spark = create_spark_session()
