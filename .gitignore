@@ -1,3 +1,8 @@
 .env
 data-pipeline/data/
 data-pipeline/datalake/
+__pycache__/
+*.py[cod]
+desktop.ini
+notes.txt
+
