@@ -20,6 +20,7 @@ def create_spark_session() -> SparkSession:
     Builds and configures a SparkSession, automatically fetching and attaching
     the PostgreSQL JDBC driver and setting JVM memory parameters.
     """
+    os.makedirs("/tmp/spark-events", exist_ok=True)
     print("Initializing SparkSession...")
 
     spark = (
@@ -35,7 +36,9 @@ def create_spark_session() -> SparkSession:
             settings.spark_executor_memory,
         )
         # Enable PyArrow for efficient column-level operations and JVM-Python serialization
-        .config("spark.sql.execution.arrow.pyspark.enabled", "true")     
+        .config("spark.sql.execution.arrow.pyspark.enabled", "true")  
+        .config("spark.eventLog.enabled", "true")
+        .config("spark.eventLog.dir", "file:///tmp/spark-events")   
         .master("local[*]") # Bind master to local mode using all available CPU cores
         .getOrCreate()
     )
