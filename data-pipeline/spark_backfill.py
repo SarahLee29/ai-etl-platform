@@ -3,9 +3,11 @@ import sys
 import time
 from typing import Tuple
 from dotenv import load_dotenv
+import json
 
 from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql import functions as F
+from pyspark.sql.types import StructType, StructField, StringType, ArrayType
 
 load_dotenv()
 DB_HOST = os.getenv("DB_HOST")
@@ -23,7 +25,7 @@ def create_spark_session() -> SparkSession:
     Builds and configures a SparkSession, automatically fetching and attaching
     the PostgreSQL JDBC driver and setting JVM memory parameters.
     """
-    print("⚙️ Initializing SparkSession...")
+    print("Initializing SparkSession...")
     
     postgres_jar_maven = "org.postgresql:postgresql:42.7.3"
 
@@ -31,9 +33,10 @@ def create_spark_session() -> SparkSession:
         SparkSession.builder
         .appName("ArXiv_Historical_Backfill_ETL")        
         .config("spark.jars.packages", postgres_jar_maven)  # Dynamically load Postgres JDBC driver package
-        .config("spark.driver.memory", "4g")                          # Allocate 4GB heap memory to Driver
-        .config("spark.sql.execution.arrow.pyspark.enabled", "true")  # Enable Apache Arrow acceleration for Pandas UDFs
-        .config("spark.sql.shuffle.partitions", "10")                  # Reduce shuffle partitions for local dev speed        
+        .config("spark.driver.memory", "4g")
+        .config("spark.executor.memory", "4g")
+        # Enable PyArrow for efficient column-level operations and JVM-Python serialization
+        .config("spark.sql.execution.arrow.pyspark.enabled", "true")     
         .master("local[*]") # Bind master to local mode using all available CPU cores
         .getOrCreate()
     )
@@ -42,26 +45,47 @@ def create_spark_session() -> SparkSession:
     print("✅ SparkSession initialized successfully!")
     return spark
 
-def test_step_2():
-    print("--- Testing Step 2 Initialization ---")
+def define_arxiv_schema() -> StructType:
+    """
+    Defines explicit Schema for Kaggle ArXiv JSONL dataset.
+    Bypasses costly Schema Inference scans over 5.7GB data.
+    """
+    return StructType([
+        StructField("id", StringType(), True),
+        StructField("submitter", StringType(), True),
+        StructField("authors", StringType(), True),
+        StructField("title", StringType(), True),
+        StructField("comments", StringType(), True),
+        StructField("journal-ref", StringType(), True),
+        StructField("doi", StringType(), True),
+        StructField("report-no", StringType(), True),
+        StructField("categories", StringType(), True),
+        StructField("license", StringType(), True),
+        StructField("abstract", StringType(), True),
+        StructField("update_date", StringType(), True),
+        # Complex nested array: [["Surname", "First name", "Suffix"]]
+        StructField("authors_parsed", ArrayType(ArrayType(StringType())), True)
+    ])
+
+def extract_historical_data(spark: SparkSession, file_path: str) -> DataFrame:
+    """
+    Reads bulk historical ArXiv dataset (JSON or Parquet format) into a PySpark DataFrame.
+    Defines explicit schema hints to prevent costly schema inference overhead.
+    """
+    print(f"Extracting historical data from source: {file_path}")
+
+    schema = define_arxiv_schema()
+    try:
+        df = spark.read.schema(schema).option("multiline", "true").json(file_path)
+        print(f"✅ Data extracted successfully! Initial record count: {df.count()}")
+        df.show()
+        return df
+
+    except Exception as e:
+        print(f"❌ Failed to extract data from {file_path}. Error: {str(e)}")
+        raise e
     
-    # 1. Initialize Spark Session
-    spark = create_spark_session()
-    
-    # 2. Verify Spark Master and App Name
-    print(f"App Name: {spark.sparkContext.appName}")
-    print(f"Master URL: {spark.sparkContext.master}")
-    
-    # 3. Test Spark Engine with a Dummy DataFrame
-    test_data = [("test_id_1", "ArXiv Paper Title 1"), ("test_id_2", "ArXiv Paper Title 2")]
-    df = spark.createDataFrame(test_data, ["id", "title"])
-    
-    print("\nDummy DataFrame Output:")
-    df.show()
-    
-    # 4. Clean up session
-    spark.stop()
-    print("✅ Step 2 Test Passed!")
 
 if __name__ == "__main__":
-    test_step_2()
+    spark = create_spark_session()
+    extract_historical_data(spark, "/app/data/part_of_arxiv_history.json")
