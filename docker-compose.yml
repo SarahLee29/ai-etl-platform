@@ -48,6 +48,7 @@ services:
     container_name: ai_etl_pipeline
     volumes:
       - ./data-pipeline:/app
+      - spark_events:/tmp/spark-events
     environment:
       - DB_HOST=postgres 
       - DB_PORT=5432
@@ -58,8 +59,23 @@ services:
     env_file:
       - ./.env
 
+  spark-history-server:
+    image: apache/spark:3.5.0
+    user: "0:0"
+    environment:
+      SPARK_HISTORY_OPTS: "-Dspark.history.fs.logDirectory=file:///tmp/spark-events"
+    command: >
+      bash -c
+      "/opt/spark/sbin/start-history-server.sh &&
+      tail -f /dev/null"
+    ports:
+      - "18080:18080"
+    volumes:
+      - spark_events:/tmp/spark-events
+
 volumes:
   postgres_data:
+  spark_events:
 
 networks:
   ai_etl_network:
