@@ -1,4 +1,5 @@
 import argparse
+import time
 
 from daily_ingest import run_daily_pipeline
 from spark_backfill import  run_backfill_pipeline
@@ -33,4 +34,9 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    start_time = time.time()
     main()
+    end_time = time.time()
+    total_sec = end_time - start_time   
+
+    print(f"⏱️[Benchmark] Finished in {total_sec:.2f} seconds ({total_sec / 60:.2f} minutes).")
