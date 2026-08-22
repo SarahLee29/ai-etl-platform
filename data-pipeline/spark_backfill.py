@@ -202,14 +202,6 @@ def run_backfill_pipeline(
 
         load_to_data_lake(clean_df, parquet_output_path)
 
-        '''load_to_postgres(
-            df=clean_df,
-            pg_url=pg_config["url"],
-            pg_table=pg_config["table"],
-            pg_properties=pg_config["properties"],
-            num_partitions=settings.spark_partitions
-        )'''
-
     except Exception as e:
         print(f"❌ Pipeline Execution Failed: {str(e)}")
         sys.exit(1)
@@ -222,14 +214,6 @@ if __name__ == "__main__":
     parquet_output_path = settings.datalake_path
     dlq_path = settings.dlq_path
 
-    pg_config = {
-        "url": settings.jdbc_url,
-        "table": settings.target_table,
-        "properties": {
-            "user": settings.db_user,
-            "password": settings.db_password,
-        },
-    }
     run_backfill_pipeline(
         input_json_path=input_json_path,
         parquet_output_path=parquet_output_path,
