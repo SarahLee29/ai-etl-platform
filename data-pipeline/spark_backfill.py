@@ -1,14 +1,5 @@
 import os
 import sys
-import time
-from typing import Tuple
-from dotenv import load_dotenv
-import json
-
-import re
-import psycopg2
-from psycopg2 import sql
-
 from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql import functions as F
 from pyspark.sql.types import StructType, StructField, StringType, ArrayType
@@ -186,153 +177,17 @@ def load_to_data_lake(df: DataFrame, output_path: str):
         .parquet(output_path)
     )
     print("✅ [Load] Data successfully written to Partitioned Parquet Lake!")
-    
-def load_to_postgres(
-    df: DataFrame, 
-    pg_url: str, 
-    pg_table: str, 
-    pg_properties: dict,
-    num_partitions: int = 8
-):
-    """
-    Loads Parquet/Clean DataFrame into PostgreSQL using parallel JDBC execution.
-    Tunes JDBC batch options to maximize PostgreSQL insert throughput.
-    """
-
-    if df.isEmpty():
-        print("[Load] No valid records to write to PostgreSQL.")
-        return
-
-    stage_table = f"{pg_table}_backfill_stage"
-    
-    print(f"[Load] Preparing {df.count()} records for PostgreSQL table '{stage_table}'...")
-
-    staged_df = (
-            df.select(
-                "paper_id",
-                "title",
-                "abstract",
-                "authors",
-                "categories",
-                "url",
-                "published_date",
-                "published_year",
-                "ingested_at",
-            )
-            .dropDuplicates(["paper_id"])
-            .repartition(num_partitions)
-        )
-
-    print(f"[Load] Writing records to staging table {stage_table}")
-
-    try:
-       (
-        staged_df.write
-        .format("jdbc")
-        .option("url", pg_url)
-        .option("dbtable", stage_table)
-        .option("user", pg_properties["user"])
-        .option("password", pg_properties["password"])
-        .option("driver", "org.postgresql.Driver")
-        .option("batchsize", "10000")
-        .option("isolationLevel", "READ_COMMITTED")
-        .mode("overwrite")
-        .save()
-        ) 
-         
-       print(f"✅ [Load] Successfully ingested data into staging table: '{stage_table}'!")
-
-    except Exception as e:
-        print(f"❌ [Load] PostgreSQL JDBC ingestion failed. Error: {str(e)}")
-        raise e
-
-    print(f"[Load] Upsert records to target table {pg_table}")
-
-    conn = None
-    cursor = None
-
-    try:
-        conn = psycopg2.connect(
-            host=settings.db_host,
-            port=settings.db_port,
-            database=settings.db_name,
-            user=pg_properties["user"],
-            password=pg_properties["password"],
-        )
-        cursor = conn.cursor()
-
-        merge_query = sql.SQL(
-            """
-            INSERT INTO {target} (
-                paper_id,
-                title,
-                abstract,
-                authors,
-                categories,
-                url,
-                published_date,
-                published_year,
-                ingested_at
-            )
-            SELECT
-                paper_id,
-                title,
-                abstract,
-                authors,
-                categories,
-                url,
-                published_date,
-                published_year,
-                ingested_at
-            FROM {stage}
-            ON CONFLICT (paper_id) DO UPDATE SET
-                title = EXCLUDED.title,
-                abstract = EXCLUDED.abstract,
-                authors = EXCLUDED.authors,
-                categories = EXCLUDED.categories,
-                url = EXCLUDED.url,
-                published_date = EXCLUDED.published_date,
-                published_year = EXCLUDED.published_year,
-                ingested_at = EXCLUDED.ingested_at;
-            """
-        ).format(
-            target=sql.Identifier(pg_table),
-            stage=sql.Identifier(stage_table),
-        )
-
-        cursor.execute(merge_query)
-        conn.commit()
-
-        print(f"✅ [Load] Successfully upserted backfill records into '{pg_table}'." )      
-
-        cursor.execute(
-            sql.SQL("DROP TABLE IF EXISTS {stage};").format(
-                stage=sql.Identifier(stage_table),
-            )
-        )
-        conn.commit()
-
-    except Exception as error:
-        if conn is not None:
-            conn.rollback()
-
-        print(
-            f"❌ [Load] PostgreSQL upsert failed for '{pg_table}': {error}")
-        raise
-
-    finally:
-        if cursor is not None:
-            cursor.close()
-        if conn is not None:
-            conn.close()
 
 
 def run_backfill_pipeline(
     input_json_path: str, 
     parquet_output_path: str, 
     dlq_path: str,
-    pg_config: dict
 ):
+    """
+    Executes The Backfill Pipeline: Extract Raw JSONL, Cleansing, SLA Validation, and Parquet Lake Persistence.
+    """
+
     spark = create_spark_session()
 
     try:
@@ -347,13 +202,13 @@ def run_backfill_pipeline(
 
         load_to_data_lake(clean_df, parquet_output_path)
 
-        load_to_postgres(
+        '''load_to_postgres(
             df=clean_df,
             pg_url=pg_config["url"],
             pg_table=pg_config["table"],
             pg_properties=pg_config["properties"],
             num_partitions=settings.spark_partitions
-        )
+        )'''
 
     except Exception as e:
         print(f"❌ Pipeline Execution Failed: {str(e)}")
@@ -378,6 +233,5 @@ if __name__ == "__main__":
     run_backfill_pipeline(
         input_json_path=input_json_path,
         parquet_output_path=parquet_output_path,
-        dlq_path=dlq_path,
-        pg_config=pg_config
+        dlq_path=dlq_path
     )
