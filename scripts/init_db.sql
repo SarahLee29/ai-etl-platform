@@ -10,7 +10,7 @@ CREATE TABLE IF NOT EXISTS arxiv_documents (
     published_date DATE,
     published_year INT,
     ingested_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    embedding vector(768)  
+    embedding vector(384)  
 );
 
 CREATE INDEX IF NOT EXISTS idx_published_year ON arxiv_documents(published_year);
