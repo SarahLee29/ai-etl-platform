@@ -7,8 +7,22 @@ from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql import functions as F
 from pyspark.sql.types import ArrayType, FloatType, StringType
 from pyspark.sql.functions import pandas_udf
+import torch
 from config import settings
 
+os.environ["OMP_NUM_THREADS"] = "2"
+os.environ["MKL_NUM_THREADS"] = "2"
+torch.set_num_threads(2)
+
+_MODEL_CACHE = None
+
+def get_model():
+    global _MODEL_CACHE
+    if _MODEL_CACHE is None:
+        from sentence_transformers import SentenceTransformer
+   
+        _MODEL_CACHE = SentenceTransformer('BAAI/bge-small-en-v1.5', device="cpu")
+    return _MODEL_CACHE
 
 
 @pandas_udf(returnType=ArrayType(FloatType())) # type: ignore
@@ -17,13 +31,8 @@ def generate_embeddings_udf(text_series: pd.Series) -> pd.Series:
     Generates embeddings for a series of text.
     Executes batched text vectorization across PySpark Worker nodes using HuggingFace models.
     Leverages Arrow zero-copy memory transfers and batch Matrix operations.
-    """
-    from sentence_transformers import SentenceTransformer
-    import torch
-
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-  
-    model = SentenceTransformer('sentence-transformers/all-mpnet-base-v2', device=device)
+    """  
+    model = get_model()
     
     text_list = text_series.fillna("").tolist()
   
@@ -199,7 +208,9 @@ def run_embeddings_pipeline():
         .config("spark.driver.memory", settings.spark_driver_memory)
         .config("spark.executor.memory", settings.spark_executor_memory)
         .config("spark.sql.execution.arrow.pyspark.enabled", "true")
-        .master("local[*]")
+        .config("spark.eventLog.enabled", "true")
+        .config("spark.eventLog.dir", "file:///tmp/spark-events")
+        .master("local[4]")
         .getOrCreate()
     )
 
@@ -213,6 +224,8 @@ def run_embeddings_pipeline():
             "embedding_text", 
             F.concat_ws(". ", F.col("title"), F.col("abstract"))
         )
+
+        df_text = df_text.repartition(4)
 
         # Trigger distributed Pandas UDF vector computation
         print("Computing Vector Embeddings via PySpark Pandas UDF...")
