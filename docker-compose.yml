@@ -49,9 +49,11 @@ services:
     volumes:
       - ./data-pipeline:/app
       - spark_events:/tmp/spark-events
+      - huggingface_cache:/app/.cache/huggingface
     environment:
       - DB_HOST=postgres 
       - DB_PORT=5432
+      - HF_HOME=/app/.cache/huggingface
     depends_on:
       - postgres
     networks:
@@ -76,6 +78,7 @@ services:
 volumes:
   postgres_data:
   spark_events:
+  huggingface_cache:
 
 networks:
   ai_etl_network:
