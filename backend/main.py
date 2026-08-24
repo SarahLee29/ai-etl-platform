@@ -123,18 +123,18 @@ def ask_rag(
     conn = get_db_connection()
     cursor = conn.cursor(cursor_factory=RealDictCursor)
     question = payload.question 
-    search_term = f"%{question}%"
     target_model = MODEL_MAP.get(model_tag, MODEL_MAP["gemini-3.7-flash"]) # type: ignore
 
     # If the question is long, also split words to try a broader match if needed, 
     # but for simplicity, search the full string first.
     try:
         cursor.execute("""
-            SELECT title, abstract, url, data_source_version, cleaned_at, llm_model_used
-            FROM test_articles 
-            WHERE (title ILIKE %s OR abstract ILIKE %s)
+            SELECT title, abstract, url
+            FROM arxiv_documents 
+            WHERE fts_vector @@ websearch_to_tsquery('english', %s)
+            ORDER BY ts_rank(fts_vector, websearch_to_tsquery('english', %s)) DESC
             LIMIT 3;
-        """, (search_term, search_term))
+        """, (question, question))
         matched_papers = cursor.fetchall()
     except Exception as e:
         raise HTTPException(status_code=500, detail="Failed to fetch context from database.")
