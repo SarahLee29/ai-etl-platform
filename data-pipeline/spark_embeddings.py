@@ -91,6 +91,10 @@ def load_to_postgres_with_vectors(
     print(f"[Load] JDBC bulk writing to staging table '{stage_table}'...")
 
     try:
+        print("=== Spark Physical Execution Plan ===")
+        staged_df.explain(True)
+        print("=====================================")
+
         (
             staged_df.write
             .format("jdbc")
@@ -99,7 +103,8 @@ def load_to_postgres_with_vectors(
             .option("user", pg_properties["user"])
             .option("password", pg_properties["password"])
             .option("driver", "org.postgresql.Driver")
-            .option("batchsize", "10000")
+            .option("reWriteBatchedInserts", "true")
+            .option("batchsize", "20000")
             .option("stringtype", "unspecified")  
             .option("isolationLevel", "READ_COMMITTED")
             .mode("overwrite")
