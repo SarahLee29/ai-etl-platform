@@ -8,6 +8,9 @@ from openai import APIConnectionError, APIStatusError, AuthenticationError, Open
 import uvicorn
 from pydantic import BaseModel
 
+from sentence_transformers import SentenceTransformer
+embedding_model = SentenceTransformer("BAAI/bge-small-en-v1.5")
+
 # Load environment variables pointing to the root .env file
 load_dotenv()
 
@@ -66,38 +69,74 @@ def home():
 
 @app.get("/search")
 def search_articles(
-    q: str = Query(..., min_length=1, description="The search keyword query"),
-    model_tag: Optional[str] = Query(default=LLM_MODEL_NAME, description="Filter results by the LLM dynamic partition"),
+    q: str = Query(..., min_length=1, description="The search query (keyword or natural language)"),
+    model_tag: Optional[str] = Query(default=LLM_MODEL_NAME, description="Filter results or track model tag"),
     limit: Optional[int] = Query(default=5, ge=1, le=50, description="Number of records to return")
-    ):
-    """Executes a traditional SQL case-insensitive keyword search."""
+):
+    """
+    Executes an advanced Hybrid Search (Dense HNSW + Sparse GIN with RRF) 
+    instead of traditional slow ILIKE queries.
+    """
     conn = get_db_connection()
     cursor = conn.cursor(cursor_factory=RealDictCursor)
-    search_query = f"%{q}%"
-    target_model = MODEL_MAP.get(model_tag, MODEL_MAP["gemini-3.7-flash"]) # type: ignore
-    '''if model_tag:
-        sql = """
-            SELECT id, title, url, abstract, fetched_at, data_source_version, cleaned_at, llm_model_used
-            FROM test_articles
-            WHERE (title ILIKE %s OR abstract ILIKE %s)
-            LIMIT %s;
-        """
-        params = (search_query, search_query, limit)
-    else:'''
-
-    sql = """
-        SELECT id, title, url, abstract, fetched_at, data_source_version, cleaned_at, llm_model_used
-        FROM test_articles
-        WHERE llm_model_used IS NULL
-        AND (title ILIKE %s OR abstract ILIKE %s)
-        LIMIT %s;
-    """
-    params = (search_query, search_query, limit)
+    
     try:
-        cursor.execute(sql, params)
-        return cursor.fetchall()
+        query_vector = embedding_model.encode(q).tolist()
+        vector_str = "[" + ",".join(map(str, query_vector)) + "]"
+
+        hybrid_sql = """
+        WITH 
+        vector_search AS (
+            SELECT 
+                paper_id, title, abstract, url, published_date,
+                ROW_NUMBER() OVER (ORDER BY embedding <=> %s::vector) AS rank_dense
+            FROM arxiv_documents
+            ORDER BY embedding <=> %s::vector
+            LIMIT 20
+        ),
+        keyword_search AS (
+            SELECT 
+                paper_id, title, abstract, url, published_date,
+                ROW_NUMBER() OVER (ORDER BY ts_rank(fts_vector, websearch_to_tsquery('english', %s)) DESC) AS rank_sparse
+            FROM arxiv_documents
+            WHERE fts_vector @@ websearch_to_tsquery('english', %s)
+            LIMIT 20
+        ),
+        combined_candidates AS (
+            SELECT COALESCE(v.paper_id, k.paper_id) AS paper_id FROM vector_search v
+            FULL OUTER JOIN keyword_search k ON v.paper_id = k.paper_id
+        )
+        SELECT 
+            c.paper_id AS id,
+            COALESCE(v.title, k.title) AS title,
+            COALESCE(v.abstract, k.abstract) AS abstract,
+            COALESCE(v.url, k.url) AS url,
+            COALESCE(v.published_date, k.published_date) AS published_date,
+            COALESCE(v.rank_dense, 999) AS rank_dense,
+            COALESCE(k.rank_sparse, 999) AS rank_sparse,
+            (
+                1.0 / (60.0 + COALESCE(v.rank_dense, 999)) + 
+                1.0 / (60.0 + COALESCE(k.rank_sparse, 999))
+            ) AS rrf_score
+        FROM combined_candidates c
+        LEFT JOIN vector_search v ON c.paper_id = v.paper_id
+        LEFT JOIN keyword_search k ON c.paper_id = k.paper_id
+        ORDER BY rrf_score DESC
+        LIMIT %s;
+        """
+
+        cursor.execute(hybrid_sql, (vector_str, vector_str, q, q, limit))
+        results = cursor.fetchall()
+        
+        return {
+            "status": "success",
+            "query": q,
+            "count": len(results),
+            "results": results
+        }
+
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Database query failure: {e}")
+        raise HTTPException(status_code=500, detail=f"Hybrid search query failure: {str(e)}")
     finally:
         cursor.close()
         conn.close()
@@ -118,39 +157,80 @@ def ask_rag(
     2. Injects the fetched papers into the prompt as Context.
     3. Calls the selected LLM to generate an answer based ONLY on the context.
     """
-    # Simple Keyword Extraction: Use the first few words or the whole question as a search term
-    # For MVP, pass the question directly into the ILIKE query.
+
     conn = get_db_connection()
     cursor = conn.cursor(cursor_factory=RealDictCursor)
     question = payload.question 
     target_model = MODEL_MAP.get(model_tag, MODEL_MAP["gemini-3.7-flash"]) # type: ignore
 
-    # If the question is long, also split words to try a broader match if needed, 
-    # but for simplicity, search the full string first.
     try:
-        cursor.execute("""
-            SELECT title, abstract, url
-            FROM arxiv_documents 
+        query_vector = embedding_model.encode(question).tolist()
+        vector_str = "[" + ",".join(map(str, query_vector)) + "]"
+
+        hybrid_sql = """
+        WITH 
+        vector_search AS (
+            SELECT 
+                paper_id, title, abstract, url, published_date,
+                ROW_NUMBER() OVER (ORDER BY embedding <=> %s::vector) AS rank_dense
+            FROM arxiv_documents
+            ORDER BY embedding <=> %s::vector
+            LIMIT 20
+        ),
+        keyword_search AS (
+            SELECT 
+                paper_id, title, abstract, url, published_date,
+                ROW_NUMBER() OVER (ORDER BY ts_rank(fts_vector, websearch_to_tsquery('english', %s)) DESC) AS rank_sparse
+            FROM arxiv_documents
             WHERE fts_vector @@ websearch_to_tsquery('english', %s)
-            ORDER BY ts_rank(fts_vector, websearch_to_tsquery('english', %s)) DESC
-            LIMIT 3;
-        """, (question, question))
+            LIMIT 20
+        ),
+        combined_candidates AS (
+            SELECT COALESCE(v.paper_id, k.paper_id) AS paper_id FROM vector_search v
+            FULL OUTER JOIN keyword_search k ON v.paper_id = k.paper_id
+        )
+        SELECT 
+            c.paper_id,
+            COALESCE(v.title, k.title) AS title,
+            COALESCE(v.abstract, k.abstract) AS abstract,
+            COALESCE(v.url, k.url) AS url,
+            COALESCE(v.published_date, k.published_date) AS published_date,
+            COALESCE(v.rank_dense, 999) AS rank_dense,
+            COALESCE(k.rank_sparse, 999) AS rank_sparse,
+            (
+                1.0 / (60.0 + COALESCE(v.rank_dense, 999)) + 
+                1.0 / (60.0 + COALESCE(k.rank_sparse, 999))
+            ) AS rrf_score
+        FROM combined_candidates c
+        LEFT JOIN vector_search v ON c.paper_id = v.paper_id
+        LEFT JOIN keyword_search k ON c.paper_id = k.paper_id
+        ORDER BY rrf_score DESC
+        LIMIT 3;
+        """
+
+        cursor.execute(hybrid_sql, (vector_str, vector_str, question, question))
         matched_papers = cursor.fetchall()
+
     except Exception as e:
-        raise HTTPException(status_code=500, detail="Failed to fetch context from database.")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch context from database: {str(e)}")
     finally:
         cursor.close()
         conn.close()
 
-    # Build the context string from database records
     context_text = ""
+    papers_metadata = []
+    
     if matched_papers:
         for i, paper in enumerate(matched_papers, 1):
             context_text += f"[{i}] Title: {paper['title']}\nAbstract: {paper['abstract']}\nURL: {paper['url']}\n\n"
+            papers_metadata.append({
+                "paper_id": paper["paper_id"],
+                "title": paper["title"],
+                "published_date": str(paper["published_date"]) if paper["published_date"] else None
+            })
     else:
         context_text = "No specific matching papers found in the local database."
 
-    # Construct the System and User Prompts
     system_prompt = (
         "You are an advanced AI Research Assistant. Your task is to answer the user's question "
         "using ONLY the provided Context from recent ArXiv papers. If the context doesn't contain "
@@ -178,7 +258,8 @@ def ask_rag(
             "model_requested": model_tag,
             "model_used": target_model,
             "question": question,
-            "answer": answer
+            "answer": answer,
+            "matched_papers": papers_metadata
         }
         
     # Catch API Key or authentication issues (500: Server configuration defect)
