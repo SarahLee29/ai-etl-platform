@@ -7,18 +7,10 @@ from dotenv import load_dotenv
 from openai import APIConnectionError, APIStatusError, AuthenticationError, OpenAI
 import uvicorn
 from pydantic import BaseModel
-
 from sentence_transformers import SentenceTransformer
-embedding_model = SentenceTransformer("BAAI/bge-small-en-v1.5")
 
 # Load environment variables pointing to the root .env file
 load_dotenv()
-
-app = FastAPI(
-    title="AI & ETL Platform Backend MVP",
-    description="A RAG backend using PostgreSQL keyword search and OpenRounter Modlels.",
-    version="1.1.0"
-)
 
 # 1. Database Configurations
 DB_HOST = os.getenv("DB_HOST")
@@ -31,6 +23,15 @@ DB_PASSWORD = os.getenv("DB_PASSWORD")
 LLM_API_KEY = os.getenv("LLM_API_KEY")
 LLM_BASE_URL = os.getenv("LLM_BASE_URL")
 LLM_MODEL_NAME = os.getenv("LLM_MODEL_NAME")
+
+
+app = FastAPI(
+    title="AI & ETL Platform Backend MVP",
+    description="A RAG backend using PostgreSQL keyword search and OpenRounter Modlels.",
+    version="1.1.0"
+)
+
+embedding_model = SentenceTransformer("BAAI/bge-small-en-v1.5")
 
 # Initialize the OpenAI Client, routing it to OpenRouter Models
 ai_client = OpenAI(
