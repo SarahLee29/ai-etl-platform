@@ -103,11 +103,12 @@ def load_to_postgres_with_vectors(
             .option("user", pg_properties["user"])
             .option("password", pg_properties["password"])
             .option("driver", "org.postgresql.Driver")
+            .option("socketTimeout", "120")
             .option("reWriteBatchedInserts", "true")
-            .option("batchsize", "20000")
+            .option("batchsize", "200")
             .option("stringtype", "unspecified")  
             .option("isolationLevel", "READ_COMMITTED")
-            .mode("overwrite")
+            .mode("append")
             .save()
         ) 
         print(f"✅ [Load] Staging table '{stage_table}' created & populated successfully!")
@@ -215,7 +216,7 @@ def run_embeddings_pipeline():
         .config("spark.sql.execution.arrow.pyspark.enabled", "true")
         .config("spark.eventLog.enabled", "true")
         .config("spark.eventLog.dir", "file:///tmp/spark-events")
-        .master("local[4]")
+        .master("local[6]")
         .getOrCreate()
     )
 
@@ -230,7 +231,7 @@ def run_embeddings_pipeline():
             F.concat_ws(". ", F.col("title"), F.col("abstract"))
         )
 
-        df_text = df_text.repartition(4)
+        df_text = df_text.repartition(6)
 
         # Trigger distributed Pandas UDF vector computation
         print("Computing Vector Embeddings via PySpark Pandas UDF...")
