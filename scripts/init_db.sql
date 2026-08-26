@@ -19,10 +19,3 @@ CREATE TABLE IF NOT EXISTS arxiv_documents (
 
 CREATE INDEX IF NOT EXISTS idx_published_year ON arxiv_documents(published_year);
 CREATE INDEX IF NOT EXISTS idx_categories ON arxiv_documents(categories);
-
-'''CREATE INDEX IF NOT EXISTS articles_fts_idx 
-ON arxiv_documents USING gin (fts_vector);
-
-CREATE INDEX IF NOT EXISTS articles_embedding_hnsw_idx 
-ON arxiv_documents USING hnsw (embedding vector_cosine_ops)
-WITH (m = 16, ef_construction = 64);'''
