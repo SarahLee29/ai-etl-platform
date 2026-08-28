@@ -174,6 +174,7 @@ def load_to_data_lake(df: DataFrame, output_path: str):
         df.write
         .mode("overwrite")
         .partitionBy("published_year")
+        .option("compression", "zstd")
         .parquet(output_path)
     )
     print("✅ [Load] Data successfully written to Partitioned Parquet Lake!")
