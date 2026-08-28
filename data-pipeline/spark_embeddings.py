@@ -103,7 +103,6 @@ def load_to_postgres_with_vectors(
             .option("user", pg_properties["user"])
             .option("password", pg_properties["password"])
             .option("driver", "org.postgresql.Driver")
-            .option("socketTimeout", "120")
             .option("reWriteBatchedInserts", "true")
             .option("batchsize", "200")
             .option("stringtype", "unspecified")  
@@ -216,9 +215,12 @@ def run_embeddings_pipeline():
         .config("spark.sql.execution.arrow.pyspark.enabled", "true")
         .config("spark.eventLog.enabled", "true")
         .config("spark.eventLog.dir", "file:///tmp/spark-events")
-        .master("local[6]")
+        .master("local[8]")
         .getOrCreate()
     )
+    spark.conf.set("spark.sql.execution.arrow.maxRecordsPerBatch", "1000") 
+    #spark.conf.set("spark.sql.adaptive.enabled", "true")
+    #spark.conf.set("spark.sql.adaptive.coalescePartitions.enabled", "true")
 
     try:
         # Load cleaned data from Silver Parquet Data Lake
@@ -231,7 +233,8 @@ def run_embeddings_pipeline():
             F.concat_ws(". ", F.col("title"), F.col("abstract"))
         )
 
-        df_text = df_text.repartition(6)
+        df_text = df_text.repartition(200)
+        print(f"Current partitions: {df_text.rdd.getNumPartitions()}")
 
         # Trigger distributed Pandas UDF vector computation
         print("Computing Vector Embeddings via PySpark Pandas UDF...")
