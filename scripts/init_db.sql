@@ -11,11 +11,5 @@ CREATE TABLE IF NOT EXISTS arxiv_documents (
     published_year INT,
     ingested_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     embedding vector(384),
-    fts_vector tsvector GENERATED ALWAYS AS (
-        setweight(to_tsvector('english', coalesce(title, '')), 'A') ||
-        setweight(to_tsvector('english', coalesce(abstract, '')), 'B')
-    ) STORED
+    metadata JSONB
 );
-
-CREATE INDEX IF NOT EXISTS idx_published_year ON arxiv_documents(published_year);
-CREATE INDEX IF NOT EXISTS idx_categories ON arxiv_documents(categories);
