@@ -86,6 +86,10 @@ def transform_data(df: DataFrame) -> DataFrame:
 
     multiline_whitespace_pattern = r"[\r\n\t]+"
     consecutive_spaces_pattern = r"\s+"
+    latex_math_pattern = r"\$.*?\$"                  # $...$
+    latex_commands_pattern = r"\\[a-zA-Z]+\{[^}]*\}" # \cite{...}, \ref{...} 
+    latex_symbols_pattern = r"\\[a-zA-Z]+"           # \alpha, \textbf 
+    control_chars_pattern = r"[\x00-\x1F\x7F]"
 
     transformed_df = (
         df
@@ -95,6 +99,10 @@ def transform_data(df: DataFrame) -> DataFrame:
         .withColumn("title", F.regexp_replace(F.col("title"), consecutive_spaces_pattern, " "))
         .withColumn("title", F.trim(F.col("title")))
         .withColumn("abstract", F.regexp_replace(F.col("abstract"), multiline_whitespace_pattern, " "))
+        .withColumn("abstract", F.regexp_replace(F.col("abstract"), latex_math_pattern, " [MATH] ")) 
+        .withColumn("abstract", F.regexp_replace(F.col("abstract"), latex_commands_pattern, ""))
+        .withColumn("abstract", F.regexp_replace(F.col("abstract"), latex_symbols_pattern, ""))
+        .withColumn("abstract", F.regexp_replace(F.col("abstract"), control_chars_pattern, ""))
         .withColumn("abstract", F.regexp_replace(F.col("abstract"), consecutive_spaces_pattern, " "))
         .withColumn("abstract", F.trim(F.col("abstract")))
         .withColumn("categories", F.regexp_replace(F.trim(F.col("categories")), consecutive_spaces_pattern, ", "))        
