@@ -33,6 +33,11 @@ class Settings:
         "/app/datalake/silver/arxiv",
     )
 
+    intermediate_metadata_path: str = os.getenv(
+        "INTERMEDIATE_METADATA_PATH",
+        "/app/datalake/intermediate/arxiv_metadata",
+    )
+
     dlq_path: str = os.getenv(
         "DLQ_PATH",
         "/app/datalake/dlq/arxiv",
