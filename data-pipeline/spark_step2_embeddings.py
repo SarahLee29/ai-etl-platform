@@ -26,7 +26,10 @@ def run_embeddings_pipeline():
 
         df_text = df.withColumn(
             "embedding_text", 
-            F.concat_ws(". ", F.col("title"), F.col("abstract"), F.col("metadata_json"))
+            F.concat_ws(". ", F.col("title"), F.col("abstract"), 
+            F.get_json_object(F.col("metadata_json"), "$.core_method"),
+            F.get_json_object(F.col("metadata_json"), "$.dataset_used"),
+            F.get_json_object(F.col("metadata_json"), "$.key_findings"))
         )
 
         df_text = df_text.repartition(100)
