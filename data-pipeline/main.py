@@ -3,7 +3,8 @@ import time
 
 from daily_ingest import run_daily_pipeline
 from spark_backfill import  run_backfill_pipeline
-from spark_embeddings import run_embeddings_pipeline
+from spark_step2_embeddings import run_embeddings_pipeline
+from spark_step1_metadata import run_metadata_pipeline
 
 from config import settings
 
@@ -12,7 +13,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "job",
-        choices=["daily", "backfill", "embeddings"],
+        choices=["daily", "backfill", "embeddings", "metadata"],
         help="Job to execute",
     )
     args = parser.parse_args()
@@ -26,8 +27,11 @@ def main() -> None:
             parquet_output_path=settings.datalake_path,
             dlq_path=settings.dlq_path,
         )
-    else:
+    elif args.job == "embeddings":
         run_embeddings_pipeline()
+        
+    elif args.job == "metadata":
+        run_metadata_pipeline()
 
 
 if __name__ == "__main__":
