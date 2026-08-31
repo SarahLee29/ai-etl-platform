@@ -172,7 +172,7 @@ def ask_rag(
         WITH 
         vector_search AS (
             SELECT 
-                paper_id, title, abstract, url, published_date,
+                paper_id, title, abstract, url, published_date, metadata
                 ROW_NUMBER() OVER (ORDER BY embedding <=> %s::vector) AS rank_dense
             FROM arxiv_documents
             ORDER BY embedding <=> %s::vector
@@ -180,7 +180,7 @@ def ask_rag(
         ),
         keyword_search AS (
             SELECT 
-                paper_id, title, abstract, url, published_date,
+                paper_id, title, abstract, url, published_date, metadata
                 ROW_NUMBER() OVER (ORDER BY ts_rank(fts_vector, websearch_to_tsquery('english', %s)) DESC) AS rank_sparse
             FROM arxiv_documents
             WHERE fts_vector @@ websearch_to_tsquery('english', %s)
@@ -196,6 +196,7 @@ def ask_rag(
             COALESCE(v.abstract, k.abstract) AS abstract,
             COALESCE(v.url, k.url) AS url,
             COALESCE(v.published_date, k.published_date) AS published_date,
+            COALESCE(v.metadata, k.metadata) AS metadata,
             COALESCE(v.rank_dense, 999) AS rank_dense,
             COALESCE(k.rank_sparse, 999) AS rank_sparse,
             (
@@ -223,11 +224,13 @@ def ask_rag(
     
     if matched_papers:
         for i, paper in enumerate(matched_papers, 1):
-            context_text += f"[{i}] Title: {paper['title']}\nAbstract: {paper['abstract']}\nURL: {paper['url']}\n\n"
+            meta_str = f"\nStructured Metadata: {paper['metadata']}" if paper['metadata'] else ""
+            context_text += f"[{i}] Title: {paper['title']}\nAbstract: {paper['abstract']}\nURL: {paper['url']}\n{meta_str}\n\n"
             papers_metadata.append({
                 "paper_id": paper["paper_id"],
                 "title": paper["title"],
-                "published_date": str(paper["published_date"]) if paper["published_date"] else None
+                "published_date": str(paper["published_date"]) if paper["published_date"] else None,
+                "metadata": paper["metadata"]
             })
     else:
         context_text = "No specific matching papers found in the local database."
