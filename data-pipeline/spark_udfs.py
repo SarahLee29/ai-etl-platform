@@ -56,23 +56,20 @@ def get_llm_pipeline():
     if _LLM_PIPELINE_CACHE is None:
         from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
         
-        model_id = "Qwen/Qwen2.5-1.5B-Instruct" 
+        model_id = "Qwen/Qwen2.5-0.5B-Instruct" 
         print(f"Loading local extraction model [{model_id}] on Worker...")
         
         tokenizer = AutoTokenizer.from_pretrained(model_id)
         model = AutoModelForCausalLM.from_pretrained(
             model_id,
-            torch_dtype=torch.float32, 
+            dtype=torch.float32, 
             device_map="cpu"
         )
         
         _LLM_PIPELINE_CACHE = pipeline(
             "text-generation",
             model=model,
-            tokenizer=tokenizer,
-            max_new_tokens=256,
-            temperature=0.1,
-            do_sample=False
+            tokenizer=tokenizer
         )
     return _LLM_PIPELINE_CACHE
 
@@ -132,7 +129,9 @@ def extract_structured_metadata_udf(abstract_series: pd.Series) -> pd.Series:
             # Batch call local model generation (pipeline supports passing a list for batch inference)
             outputs = generator(
                 list(batch_prompts), 
-                batch_size=16,          # Internal batch size to prevent out-of-memory errors
+                batch_size=16,        
+                max_new_tokens=64,             
+                do_sample=False,
                 pad_token_id=generator.tokenizer.eos_token_id
             )
             
@@ -354,3 +353,84 @@ def load_to_postgres_with_vectors(
         if conn is not None:
             conn.close()
             print("PostgreSQL Connection Closed.")
+
+
+def extract_structured_metadata_batch(texts: list) -> list:
+    """
+    Performs open-ended structured extraction on a batch of abstracts using Hugging Face Pipeline.
+    """
+    generator = get_llm_pipeline()
+    results = []
+    prompts = []
+    valid_indices = []
+
+    if generator.tokenizer is None:
+        raise RuntimeError("Tokenizer failed to initialize.")
+    
+    for idx, text in enumerate(texts):
+        text_str = str(text) if text is not None else ""
+        if not text_str.strip():
+            results.append((idx, json.dumps({
+                "core_method": "Not specified",
+                "dataset_used": "Not specified",
+                "key_findings": "Not specified"
+            })))
+            continue
+            
+        system_prompt = (
+            "You are an expert AI research assistant. Extract 3 fields from the abstract: "
+            "1. core_method (proposed algorithm/model), "
+            "2. dataset_used (datasets/benchmarks used, or 'Not specified'), "
+            "3. key_findings (one-sentence main conclusion). "
+            "Output STRICT JSON format only with keys: core_method, dataset_used, key_findings. No markdown."
+        )
+        
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": f"Abstract: {text_str}"}
+        ]
+
+        formatted_prompt = generator.tokenizer.apply_chat_template(
+            messages, 
+            tokenize=False, 
+            add_generation_prompt=True
+        )
+        prompts.append((idx, formatted_prompt))
+
+    if prompts:
+        indices, batch_prompts = zip(*prompts)
+        
+        try:
+            outputs = generator(
+                list(batch_prompts), 
+                batch_size=len(batch_prompts),        
+                max_new_tokens=256,
+                do_sample=False,
+                pad_token_id=generator.tokenizer.eos_token_id
+            )
+            
+            for idx, output in zip(indices, outputs):
+                generated_text = output[0]["generated_text"]
+                prompt_str = batch_prompts[indices.index(idx)]
+                response_content = generated_text[len(prompt_str):].strip()
+                
+                clean_json_str = response_content.replace("```json", "").replace("```", "").strip()
+                
+                parsed = json.loads(clean_json_str)
+                results.append((idx, json.dumps({
+                    "core_method": parsed.get("core_method", "Not specified"),
+                    "dataset_used": parsed.get("dataset_used", "Not specified"),
+                    "key_findings": parsed.get("key_findings", "Not specified")
+                })))
+                
+        except Exception as e:
+            print(f"⚠️ LLM Extraction parsing warning: {str(e)}")
+            for idx, _ in prompts:
+                results.append((idx, json.dumps({
+                    "core_method": "Extraction Error",
+                    "dataset_used": "Extraction Error",
+                    "key_findings": "Extraction Error"
+                })))
+
+    results.sort(key=lambda x: x[0])
+    return [res[1] for res in results]
