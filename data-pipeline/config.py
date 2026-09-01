@@ -38,6 +38,11 @@ class Settings:
         "/app/datalake/intermediate/arxiv_metadata",
     )
 
+    intermediate_embeddings_path: str = os.getenv(
+            "INTERMEDIATE_EMBEDDINGS_PATH",
+            "/app/datalake/intermediate/arxiv_embeddings",
+        )
+
     dlq_path: str = os.getenv(
         "DLQ_PATH",
         "/app/datalake/dlq/arxiv",
