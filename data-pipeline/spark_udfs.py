@@ -12,18 +12,25 @@ from pyspark.sql.functions import pandas_udf
 import torch
 from config import settings
 
-os.environ["OMP_NUM_THREADS"] = "2"
-os.environ["MKL_NUM_THREADS"] = "2"
-torch.set_num_threads(2)
+os.environ["OMP_NUM_THREADS"] = str(settings.omp_num_threads)
+os.environ["MKL_NUM_THREADS"] = str(settings.mkl_num_threads)
+torch.set_num_threads(settings.torch_num_threads)
 
 _EMBEDDING_MODEL_CACHE = None
+
+
+def get_torch_device() -> str:
+    return "cuda" if torch.cuda.is_available() else "cpu"
+
 
 def get_embedding_model():
     global _EMBEDDING_MODEL_CACHE
     if _EMBEDDING_MODEL_CACHE is None:
         from sentence_transformers import SentenceTransformer
-   
-        _EMBEDDING_MODEL_CACHE = SentenceTransformer('BAAI/bge-small-en-v1.5', device="cpu")
+
+        device = get_torch_device()
+        print(f"[Embedding] Loading sentence-transformers model [{settings.embedding_model_id}] on device: {device}")
+        _EMBEDDING_MODEL_CACHE = SentenceTransformer(settings.embedding_model_id, device=device)
     return _EMBEDDING_MODEL_CACHE
 
 @pandas_udf(returnType=ArrayType(FloatType())) # type: ignore
@@ -38,10 +45,10 @@ def generate_embeddings_udf(text_series: pd.Series) -> pd.Series:
     text_list = text_series.fillna("").tolist()
   
     embeddings = model.encode(
-        text_list, 
-        batch_size=32, 
-        show_progress_bar=False, 
-        normalize_embeddings=True
+        text_list,
+        batch_size=settings.embedding_batch_size,
+        show_progress_bar=False,
+        normalize_embeddings=True,
     )
     
     return pd.Series(embeddings.tolist())
@@ -55,21 +62,23 @@ def get_llm_pipeline():
     global _LLM_PIPELINE_CACHE, _LLM_MODEL_CACHE, _LLM_TOKENIZER_CACHE
     if _LLM_PIPELINE_CACHE is None:
         from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
-        
-        model_id = "Qwen/Qwen2.5-0.5B-Instruct" 
-        print(f"Loading local extraction model [{model_id}] on Worker...")
-        
+
+        device = get_torch_device()
+        model_id = settings.llm_model_id
+        print(f"[LLM] Loading local extraction model [{model_id}] on device: {device}")
+
         tokenizer = AutoTokenizer.from_pretrained(model_id)
         model = AutoModelForCausalLM.from_pretrained(
             model_id,
-            dtype=torch.float32, 
-            device_map="cpu"
+            dtype=torch.float16 if device == "cuda" else torch.float32,
+            device_map="auto" if device == "cuda" else "cpu",
         )
-        
+
         _LLM_PIPELINE_CACHE = pipeline(
             "text-generation",
             model=model,
-            tokenizer=tokenizer
+            tokenizer=tokenizer,
+            device=0 if device == "cuda" else -1,
         )
     return _LLM_PIPELINE_CACHE
 
@@ -128,11 +137,11 @@ def extract_structured_metadata_udf(abstract_series: pd.Series) -> pd.Series:
         try:
             # Batch call local model generation (pipeline supports passing a list for batch inference)
             outputs = generator(
-                list(batch_prompts), 
-                batch_size=16,        
-                max_new_tokens=64,             
+                list(batch_prompts),
+                batch_size=settings.llm_batch_size,
+                max_new_tokens=settings.llm_max_new_tokens,
                 do_sample=False,
-                pad_token_id=generator.tokenizer.eos_token_id
+                pad_token_id=generator.tokenizer.eos_token_id,
             )
             
             for idx, output in zip(indices, outputs):
