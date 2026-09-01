@@ -7,7 +7,7 @@ from pyspark.sql import functions as F
 def run_embeddings_pipeline():
     spark = (
             SparkSession.builder
-            .appName("ArXiv_Step1_Metadata_ETL")        
+            .appName("ArXiv_Step2_Embeddings_ETL")        
             .config("spark.jars.packages", settings.postgres_jar_maven)
             .config("spark.driver.memory", settings.spark_driver_memory)
             .config("spark.executor.memory", settings.spark_executor_memory)
@@ -42,22 +42,12 @@ def run_embeddings_pipeline():
             generate_embeddings_udf(F.col("embedding_text")) # type: ignore
         ).drop("embedding_text")
 
-        # Bulk ingest into PostgreSQL with pgvector schema support
-        pg_config = {
-            "url": settings.jdbc_url,
-            "table": settings.target_table,
-            "properties": {
-                "user": settings.db_user,
-                "password": settings.db_password,
-            },
-        }
-
-        load_to_postgres_with_vectors(
-            df=df_embedded,
-            pg_url=pg_config["url"],
-            pg_table=pg_config["table"],
-            pg_properties=pg_config["properties"],
-            num_partitions=settings.spark_partitions
+        print("Writing intermediate embeddings to Parquet...")
+        (
+            df_embedded.write
+            .mode("overwrite")
+            .option("compression", "zstd")
+            .parquet(settings.intermediate_embeddings_path)
         )
     except Exception as e:
         print(f"❌ Error during embeddings pipeline: {e}")
