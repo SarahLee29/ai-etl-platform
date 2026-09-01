@@ -12,10 +12,10 @@ def run_embeddings_pipeline():
             .config("spark.driver.memory", settings.spark_driver_memory)
             .config("spark.executor.memory", settings.spark_executor_memory)
             .config("spark.sql.execution.arrow.pyspark.enabled", "true")  
-            .config("spark.sql.execution.arrow.pyspark.maxRecordsPerBatch", "200")
+            .config("spark.sql.execution.arrow.pyspark.maxRecordsPerBatch", str(settings.spark_embeddings_max_records_per_batch))
             .config("spark.eventLog.enabled", "true")
             .config("spark.eventLog.dir", "file:///tmp/spark-events") 
-            .master("local[8]") 
+            .master(settings.spark_master_embeddings) 
             .getOrCreate()
         )
     try:
@@ -32,7 +32,7 @@ def run_embeddings_pipeline():
             F.get_json_object(F.col("metadata_json"), "$.key_findings"))
         )
 
-        df_text = df_text.repartition(100)
+        df_text = df_text.repartition(settings.spark_embeddings_repartitions)
         #spark.conf.set("spark.sql.adaptive.enabled", "true")
         #spark.conf.set("spark.sql.adaptive.coalescePartitions.enabled", "true")
 
