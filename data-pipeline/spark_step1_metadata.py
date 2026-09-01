@@ -14,10 +14,10 @@ def run_metadata_pipeline():
         .config("spark.driver.memory", settings.spark_driver_memory)
         .config("spark.executor.memory", settings.spark_executor_memory)
         .config("spark.sql.execution.arrow.pyspark.enabled", "true")  
-        .config("spark.sql.execution.arrow.pyspark.maxRecordsPerBatch", "50")
+        .config("spark.sql.execution.arrow.pyspark.maxRecordsPerBatch", str(settings.spark_metadata_max_records_per_batch))
         .config("spark.eventLog.enabled", "true")
         .config("spark.eventLog.dir", "file:///tmp/spark-events") 
-        .master("local[4]") 
+        .master(settings.spark_master_metadata) 
         .getOrCreate()
     )
   try:
@@ -25,7 +25,7 @@ def run_metadata_pipeline():
     print(f"Reading cleaned parquet from: {settings.datalake_path}")
     df = spark.read.parquet(settings.datalake_path)
 
-    df = df.repartition(20)
+    df = df.repartition(settings.spark_metadata_repartitions)
 
     print("Extracting structured metadata via LLM UDF...")
     df_structured = df.withColumn(
