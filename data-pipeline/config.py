@@ -66,8 +66,43 @@ class Settings:
         "4g",
     )
 
-    spark_partitions: int = int(
-        os.getenv("SPARK_PARTITIONS", "4")
+    spark_master_metadata: str = os.getenv(
+        "SPARK_MASTER_METADATA",
+        "local[4]",
+    )
+
+    spark_master_embeddings: str = os.getenv(
+        "SPARK_MASTER_EMBEDDINGS",
+        "local[8]",
+    )
+
+    spark_master_loading: str = os.getenv(
+        "SPARK_MASTER_LOADING",
+        "local[8]",
+    )
+
+    spark_metadata_repartitions: int = int(
+        os.getenv("SPARK_METADATA_REPARTITIONS", "20")
+    )
+
+    spark_embeddings_repartitions: int = int(
+        os.getenv("SPARK_EMBEDDINGS_REPARTITIONS", "100")
+    )
+
+    spark_loading_repartitions: int = int(
+        os.getenv("SPARK_LOADING_REPARTITIONS", "24")
+    )
+
+    spark_metadata_max_records_per_batch: int = int(
+        os.getenv("SPARK_METADATA_MAX_RECORDS_PER_BATCH", "50")
+    )
+
+    spark_embeddings_max_records_per_batch: int = int(
+        os.getenv("SPARK_EMBEDDINGS_MAX_RECORDS_PER_BATCH", "200")
+    )
+
+    spark_loading_max_records_per_batch: int = int(
+        os.getenv("SPARK_LOADING_MAX_RECORDS_PER_BATCH", "200")
     )
 
     postgres_jar_maven: str = os.getenv(
