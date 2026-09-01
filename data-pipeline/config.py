@@ -105,6 +105,40 @@ class Settings:
         os.getenv("SPARK_LOADING_MAX_RECORDS_PER_BATCH", "200")
     )
 
+    omp_num_threads: int = int(
+        os.getenv("OMP_NUM_THREADS", "2")
+    )
+
+    mkl_num_threads: int = int(
+        os.getenv("MKL_NUM_THREADS", "2")
+    )
+
+    torch_num_threads: int = int(
+        os.getenv("TORCH_NUM_THREADS", "2")
+    )
+
+    embedding_model_name: str = os.getenv(
+        "EMBEDDING_MODEL_NAME",
+        "BAAI/bge-small-en-v1.5",
+    )
+
+    embedding_batch_size: int = int(
+        os.getenv("EMBEDDING_BATCH_SIZE", "32")
+    )
+
+    llm_model_id: str = os.getenv(
+        "LLM_MODEL_ID",
+        os.getenv("LLM_MODEL_NAME", "Qwen/Qwen2.5-0.5B-Instruct"),
+    )
+
+    llm_batch_size: int = int(
+        os.getenv("LLM_BATCH_SIZE", "16")
+    )
+
+    llm_max_new_tokens: int = int(
+        os.getenv("LLM_MAX_NEW_TOKENS", "64")
+    )
+
     postgres_jar_maven: str = os.getenv(
         "POSTGRES_JAR_MAVEN",
         "org.postgresql:postgresql:42.7.3",
