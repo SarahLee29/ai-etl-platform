@@ -10,10 +10,10 @@ def load_to_postgres():
                 .config("spark.driver.memory", settings.spark_driver_memory)
                 .config("spark.executor.memory", settings.spark_executor_memory)
                 .config("spark.sql.execution.arrow.pyspark.enabled", "true")  
-                .config("spark.sql.execution.arrow.pyspark.maxRecordsPerBatch", "200")
+                .config("spark.sql.execution.arrow.pyspark.maxRecordsPerBatch", str(settings.spark_loading_max_records_per_batch))
                 .config("spark.eventLog.enabled", "true")
                 .config("spark.eventLog.dir", "file:///tmp/spark-events") 
-                .master("local[8]") 
+                .master(settings.spark_master_loading) 
                 .getOrCreate()
             )
     
@@ -34,7 +34,7 @@ def load_to_postgres():
             pg_url=pg_config["url"],
             pg_table=pg_config["table"],
             pg_properties=pg_config["properties"],
-            num_partitions=settings.spark_partitions
+            num_partitions=settings.spark_loading_repartitions
         )
 
     except Exception as e:
