@@ -5,6 +5,7 @@ from daily_ingest import run_daily_pipeline
 from spark_backfill import  run_backfill_pipeline
 from spark_step2_embeddings import run_embeddings_pipeline
 from spark_step1_metadata import run_metadata_pipeline
+from spark_step3_loading import load_to_postgres
 
 from config import settings
 
@@ -13,7 +14,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "job",
-        choices=["daily", "backfill", "embeddings", "metadata"],
+        choices=["daily", "backfill", "embeddings", "metadata", "loading"],
         help="Job to execute",
     )
     args = parser.parse_args()
@@ -33,6 +34,8 @@ def main() -> None:
     elif args.job == "metadata":
         run_metadata_pipeline()
 
+    elif args.job == "loading":
+        load_to_postgres()
 
 if __name__ == "__main__":
     start_time = time.time()
