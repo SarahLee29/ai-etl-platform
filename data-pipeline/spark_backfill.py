@@ -1,10 +1,30 @@
 import os
+import shutil
 import sys
 from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql import functions as F
 from pyspark.sql.types import StructType, StructField, StringType, ArrayType
 
 from config import settings
+
+
+def clear_dlq_path(dlq_output_path: str) -> None:
+    """
+    Removes any previous DLQ output so each pipeline run starts from a clean state.
+    """
+    if not dlq_output_path:
+        return
+
+    try:
+        if os.path.exists(dlq_output_path):
+            if os.path.isdir(dlq_output_path):
+                shutil.rmtree(dlq_output_path)
+            else:
+                os.remove(dlq_output_path)
+        print(f"[DLQ] Cleared previous DLQ output at {dlq_output_path}")
+    except OSError as exc:
+        print(f"[DLQ] Failed to clear previous DLQ output at {dlq_output_path}: {exc}")
+        raise
 
 def create_spark_session() -> SparkSession:
     """
@@ -159,7 +179,7 @@ def apply_sla_gate_and_circuit_breaker(df: DataFrame, dlq_output_path: str) -> D
         print(f"[DLQ] Routing {invalid_count} invalid records to Dead-Letter Queue at {dlq_output_path}")
         (
             invalid_df.write
-            .mode("append")
+            .mode("overwrite")
             .parquet(dlq_output_path)
         )
 
@@ -200,6 +220,8 @@ def run_backfill_pipeline(
     spark = create_spark_session()
 
     try:
+        clear_dlq_path(dlq_path)
+
         raw_df = extract_historical_data(spark, input_json_path)
 
         transformed_df = transform_data(raw_df)
