@@ -117,8 +117,8 @@ class Settings:
         os.getenv("TORCH_NUM_THREADS", "2")
     )
 
-    embedding_model_name: str = os.getenv(
-        "EMBEDDING_MODEL_NAME",
+    embedding_model_id: str = os.getenv(
+        "EMBEDDING_MODEL_ID",
         "BAAI/bge-small-en-v1.5",
     )
 
@@ -128,7 +128,7 @@ class Settings:
 
     llm_model_id: str = os.getenv(
         "LLM_MODEL_ID",
-        os.getenv("LLM_MODEL_NAME", "Qwen/Qwen2.5-0.5B-Instruct"),
+        os.getenv("LLM_MODEL_ID", "Qwen/Qwen2.5-0.5B-Instruct"),
     )
 
     llm_batch_size: int = int(
