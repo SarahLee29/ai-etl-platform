@@ -97,10 +97,10 @@ def search_articles(
         ),
         keyword_search AS (
             SELECT 
-                paper_id, title, abstract, url, published_date,
-                ROW_NUMBER() OVER (ORDER BY ts_rank(fts_vector, websearch_to_tsquery('english', %s)) DESC) AS rank_sparse
+                paper_id, title, abstract, url, published_date, metadata,
+                ROW_NUMBER() OVER (ORDER BY ts_rank(to_tsvector('english', COALESCE(title, '') || ' ' || COALESCE(abstract, '')), websearch_to_tsquery('english', %s)) DESC) AS rank_sparse
             FROM arxiv_documents
-            WHERE fts_vector @@ websearch_to_tsquery('english', %s)
+            WHERE to_tsvector('english', COALESCE(title, '') || ' ' || COALESCE(abstract, '')) @@ websearch_to_tsquery('english', %s)
             LIMIT 20
         ),
         combined_candidates AS (
@@ -172,7 +172,7 @@ def ask_rag(
         WITH 
         vector_search AS (
             SELECT 
-                paper_id, title, abstract, url, published_date, metadata
+                paper_id, title, abstract, url, published_date, metadata,
                 ROW_NUMBER() OVER (ORDER BY embedding <=> %s::vector) AS rank_dense
             FROM arxiv_documents
             ORDER BY embedding <=> %s::vector
@@ -180,10 +180,10 @@ def ask_rag(
         ),
         keyword_search AS (
             SELECT 
-                paper_id, title, abstract, url, published_date, metadata
-                ROW_NUMBER() OVER (ORDER BY ts_rank(fts_vector, websearch_to_tsquery('english', %s)) DESC) AS rank_sparse
+                paper_id, title, abstract, url, published_date, metadata,
+                ROW_NUMBER() OVER (ORDER BY ts_rank(to_tsvector('english', COALESCE(title, '') || ' ' || COALESCE(abstract, '')), websearch_to_tsquery('english', %s)) DESC) AS rank_sparse
             FROM arxiv_documents
-            WHERE fts_vector @@ websearch_to_tsquery('english', %s)
+            WHERE to_tsvector('english', COALESCE(title, '') || ' ' || COALESCE(abstract, '')) @@ websearch_to_tsquery('english', %s)
             LIMIT 20
         ),
         combined_candidates AS (
