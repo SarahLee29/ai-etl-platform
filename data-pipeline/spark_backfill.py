@@ -124,6 +124,8 @@ def transform_data(df: DataFrame) -> DataFrame:
         .withColumn("abstract", F.regexp_replace(F.col("abstract"), latex_symbols_pattern, ""))
         .withColumn("abstract", F.regexp_replace(F.col("abstract"), control_chars_pattern, ""))
         .withColumn("abstract", F.regexp_replace(F.col("abstract"), consecutive_spaces_pattern, " "))
+        .withColumn("abstract", F.regexp_replace(F.col("abstract"), r"\{", "("))
+        .withColumn("abstract", F.regexp_replace(F.col("abstract"), r"\}", ")"))
         .withColumn("abstract", F.trim(F.col("abstract")))
         .withColumn("categories", F.regexp_replace(F.trim(F.col("categories")), consecutive_spaces_pattern, ", "))        
         .withColumn(
