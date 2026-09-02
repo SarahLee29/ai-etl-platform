@@ -53,6 +53,22 @@ def generate_embeddings_udf(text_series: pd.Series) -> pd.Series:
     
     return pd.Series(embeddings.tolist())
 
+
+def generate_embeddings_batch(texts: list) -> list:
+    """Generate normalized embeddings for a regular Python list of texts."""
+    if not texts:
+        return []
+
+    model = get_embedding_model()
+    text_list = [str(text) if text is not None else "" for text in texts]
+    embeddings = model.encode(
+        text_list,
+        batch_size=settings.embedding_batch_size,
+        show_progress_bar=False,
+        normalize_embeddings=True,
+    )
+    return embeddings.tolist()
+
 _LLM_PIPELINE_CACHE = None
 
 
