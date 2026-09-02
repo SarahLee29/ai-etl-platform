@@ -55,6 +55,48 @@ def generate_embeddings_udf(text_series: pd.Series) -> pd.Series:
 
 _LLM_PIPELINE_CACHE = None
 
+
+def parse_metadata_response(response_content: str) -> dict:
+    """Parse or recover the three metadata fields from a model response."""
+    import re
+
+    response = response_content.replace("```json", "").replace("```", "").strip()
+    first_brace = response.find("{")
+    candidate = response[first_brace:] if first_brace >= 0 else response
+    candidate = re.sub(r"^\{\s*,\s*", "{", candidate, count=1)
+
+    json_match = re.search(r"\{.*\}", candidate, re.DOTALL)
+    complete_candidate = json_match.group(0) if json_match else candidate
+
+    try:
+        parsed = json.loads(complete_candidate)
+        if not isinstance(parsed, dict):
+            raise TypeError("Metadata response must be a JSON object")
+        return {
+            "core_method": str(parsed.get("core_method", "Not specified")),
+            "dataset_used": str(parsed.get("dataset_used", "Not specified")),
+            "key_findings": str(parsed.get("key_findings", "Not specified")),
+        }
+    except (json.JSONDecodeError, AttributeError, TypeError):
+        recovered = {}
+        for field in ("core_method", "dataset_used", "key_findings"):
+            match = re.search(
+                rf'"{field}"\s*:\s*"(?P<value>.*?)(?:"\s*[,}}]|$)',
+                response,
+                re.DOTALL,
+            )
+            if match:
+                recovered[field] = match.group("value").strip()
+
+        if not recovered:
+            raise ValueError("Response is not valid JSON and no fields could be recovered")
+
+        return {
+            "core_method": recovered.get("core_method", "Not specified"),
+            "dataset_used": recovered.get("dataset_used", "Not specified"),
+            "key_findings": recovered.get("key_findings", "Not specified"),
+        }
+
 def get_llm_pipeline():
     """
     Lazily loads a local instruction-tuned LLM in each Spark Worker process.
@@ -88,33 +130,38 @@ def extract_structured_metadata_udf(abstract_series: pd.Series) -> pd.Series:
     Performs open-ended structured extraction on paper abstracts using a local Hugging Face Pipeline.
     """
     generator = get_llm_pipeline()
-    results = []
-    
-    # Convert Pandas Series to a list for efficient processing
-    texts = abstract_series.fillna("").tolist()
-    
-    # Construct prompt lists for batch inputs
-    prompts = []
-    valid_indices = []
-
     if generator.tokenizer is None:
         raise RuntimeError("Tokenizer failed to initialize.")
     
+    # Convert Pandas Series to a list for efficient processing
+    texts = abstract_series.fillna("").tolist()
+
+    results = [json.dumps({
+            "core_method": "Not specified",
+            "dataset_used": "Not specified",
+            "key_findings": "Not specified"
+        }) for _ in texts]
+    
+    # Construct prompt lists for batch inputs
+    prompts = []
+    
     for idx, text in enumerate(texts):
         if not text.strip():
-            results.append((idx, json.dumps({
-                "core_method": "Not specified",
-                "dataset_used": "Not specified",
-                "key_findings": "Not specified"
-            })))
             continue
             
         system_prompt = (
-            "You are an expert AI research assistant. Extract 3 fields from the abstract: "
-            "1. core_method (proposed algorithm/model), "
-            "2. dataset_used (datasets/benchmarks used, or 'Not specified'), "
-            "3. key_findings (one-sentence main conclusion). "
-            "Output STRICT JSON format only with keys: core_method, dataset_used, key_findings. No markdown."
+            "Return exactly one valid JSON object and nothing else. "
+            "Do not write an explanation, prefix, suffix, or markdown code fence. "
+            "The object must contain exactly these three keys: "
+            "core_method, dataset_used, key_findings. "
+            "Every value must be a short plain string. Use 'Not specified' when the abstract "
+            "does not provide the information. "
+            "core_method: name the proposed algorithm or model in at most 12 words; "
+            "dataset_used: name the dataset or benchmark in at most 12 words; "
+            "key_findings: state the main conclusion in at most 20 words. "
+            "Read the abstract only to extract facts for these fields. "
+            'Valid example: {"core_method":"Transformer model","dataset_used":"MNIST","key_findings":"The model improves classification accuracy."} '
+            "Your entire response must start with { and end with }."
         )
         
         # Format messages matching Qwen / Llama Chat Template standard
@@ -142,40 +189,43 @@ def extract_structured_metadata_udf(abstract_series: pd.Series) -> pd.Series:
                 max_new_tokens=settings.llm_max_new_tokens,
                 do_sample=False,
                 pad_token_id=generator.tokenizer.eos_token_id,
+                return_full_text=False,
             )
             
             for idx, output in zip(indices, outputs):
-                # Extract text generated by the model
-                generated_text = output[0]["generated_text"]
-                # Slice out the model response portion by removing the prompt prefix
-                response_content = generated_text[len(batch_prompts[indices.index(idx)]):].strip()
-                
-                # Clean up any potential markdown code blocks (e.g., ```json ... ```)
-                clean_json_str = response_content.replace("```json", "").replace("```", "").strip()
-                
-                # Try parsing JSON to ensure valid syntax
-                parsed = json.loads(clean_json_str)
-                results.append((idx, json.dumps({
-                    "core_method": parsed.get("core_method", "Not specified"),
-                    "dataset_used": parsed.get("dataset_used", "Not specified"),
-                    "key_findings": parsed.get("key_findings", "Not specified")
-                })))
+                try:
+                    generated_text = output[0]["generated_text"]        
+                    response_content = generated_text.strip()
+
+                    parsed = parse_metadata_response(response_content)
+                    results[idx] = json.dumps({
+                        "core_method": parsed["core_method"],
+                        "dataset_used": parsed["dataset_used"],
+                        "key_findings": parsed["key_findings"]
+                    }, ensure_ascii=False)
+                    
+                except Exception as error:
+                    print(
+                        f"⚠️ Metadata parse warning for row {idx}: {error}; "
+                        f"raw output={generated_text[:300]!r}"
+                    )
+                    results[idx] = json.dumps({
+                        "core_method": "Extraction Error",
+                        "dataset_used": "Extraction Error",
+                        "key_findings": "Extraction Error",
+                    }, ensure_ascii=False)
                 
         except Exception as e:
             # Fault tolerance fallback: Assign default structure if parsing fails for a batch to prevent task failure
             print(f"⚠️ LLM Extraction parsing warning: {str(e)}")
-            for idx, _ in prompts:
-                results.append((idx, json.dumps({
+            for idx in indices:
+                results[idx] = json.dumps({
                     "core_method": "Extraction Error",
                     "dataset_used": "Extraction Error",
                     "key_findings": "Extraction Error"
-                })))
+                }, ensure_ascii=False)
 
-    # Reorder results back to match the original Pandas Series index sequence
-    results.sort(key=lambda x: x[0])
-    final_json_series = pd.Series([res[1] for res in results])
-    
-    return final_json_series
+    return pd.Series(results, index=abstract_series.index)
 
 def load_to_postgres_with_vectors(
     df: DataFrame, 
@@ -369,40 +419,47 @@ def extract_structured_metadata_batch(texts: list) -> list:
     Performs open-ended structured extraction on a batch of abstracts using Hugging Face Pipeline.
     """
     generator = get_llm_pipeline()
-    results = []
-    prompts = []
-    valid_indices = []
+    tokenizer = generator.tokenizer
 
-    if generator.tokenizer is None:
+    if tokenizer is None:
         raise RuntimeError("Tokenizer failed to initialize.")
-    
+
+    results = [json.dumps({
+        "core_method": "Not specified",
+        "dataset_used": "Not specified",
+        "key_findings": "Not specified"
+    }) for _ in texts]
+    prompts = []
+
     for idx, text in enumerate(texts):
         text_str = str(text) if text is not None else ""
         if not text_str.strip():
-            results.append((idx, json.dumps({
-                "core_method": "Not specified",
-                "dataset_used": "Not specified",
-                "key_findings": "Not specified"
-            })))
             continue
-            
+
         system_prompt = (
-            "You are an expert AI research assistant. Extract 3 fields from the abstract: "
-            "1. core_method (proposed algorithm/model), "
-            "2. dataset_used (datasets/benchmarks used, or 'Not specified'), "
-            "3. key_findings (one-sentence main conclusion). "
-            "Output STRICT JSON format only with keys: core_method, dataset_used, key_findings. No markdown."
+            "Return exactly one valid JSON object and nothing else. "
+            "Do not write an explanation, prefix, suffix, or markdown code fence. "
+            "The object must contain exactly these three keys: "
+            "core_method, dataset_used, key_findings. "
+            "Every value must be a short plain string. Use 'Not specified' when the abstract "
+            "does not provide the information. "
+            "core_method: name the proposed algorithm or model in at most 12 words; "
+            "dataset_used: name the dataset or benchmark in at most 12 words; "
+            "key_findings: state the main conclusion in at most 20 words. "
+            "Read the abstract only to extract facts for these fields. "
+            'Valid example: {"core_method":"Transformer model","dataset_used":"MNIST","key_findings":"The model improves classification accuracy."} '
+            "Your entire response must start with { and end with }."
         )
-        
+
         messages = [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": f"Abstract: {text_str}"}
+            {"role": "user", "content": f"Abstract: {text_str}"},
         ]
 
-        formatted_prompt = generator.tokenizer.apply_chat_template(
-            messages, 
-            tokenize=False, 
-            add_generation_prompt=True
+        formatted_prompt = tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
         )
         prompts.append((idx, formatted_prompt))
 
@@ -410,36 +467,47 @@ def extract_structured_metadata_batch(texts: list) -> list:
         indices, batch_prompts = zip(*prompts)
         
         try:
+            # Batch call local model generation (pipeline supports passing a list for batch inference)
             outputs = generator(
-                list(batch_prompts), 
-                batch_size=len(batch_prompts),        
-                max_new_tokens=256,
+                list(batch_prompts),
+                batch_size=settings.llm_batch_size,
+                max_new_tokens=settings.llm_max_new_tokens,
                 do_sample=False,
-                pad_token_id=generator.tokenizer.eos_token_id
+                pad_token_id=tokenizer.eos_token_id,
+                return_full_text=False,
             )
             
-            for idx, output in zip(indices, outputs):
-                generated_text = output[0]["generated_text"]
-                prompt_str = batch_prompts[indices.index(idx)]
-                response_content = generated_text[len(prompt_str):].strip()
-                
-                clean_json_str = response_content.replace("```json", "").replace("```", "").strip()
-                
-                parsed = json.loads(clean_json_str)
-                results.append((idx, json.dumps({
-                    "core_method": parsed.get("core_method", "Not specified"),
-                    "dataset_used": parsed.get("dataset_used", "Not specified"),
-                    "key_findings": parsed.get("key_findings", "Not specified")
-                })))
+            for idx, output, prompt_str in zip(indices, outputs, batch_prompts):
+                try:
+                    # Extract text generated by the model
+                    generated_text = output[0]["generated_text"]
+                    response_content = generated_text.strip()
+                    
+                    parsed = parse_metadata_response(response_content)
+                    results[idx] = json.dumps({
+                        "core_method": parsed["core_method"],
+                        "dataset_used": parsed["dataset_used"],
+                        "key_findings": parsed["key_findings"]
+                    }, ensure_ascii=False)
+                    
+                except Exception as error:
+                    print(
+                        f"⚠️ Metadata parse warning for row {idx}: {error}; "
+                        f"raw output={generated_text[:300]!r}"
+                    )
+                    results[idx] = json.dumps({
+                        "core_method": "Extraction Error",
+                        "dataset_used": "Extraction Error",
+                        "key_findings": "Extraction Error"
+                    }, ensure_ascii=False)
                 
         except Exception as e:
-            print(f"⚠️ LLM Extraction parsing warning: {str(e)}")
+            print(f"⚠️ Batch Generation Error: {str(e)}")
             for idx, _ in prompts:
-                results.append((idx, json.dumps({
+                results[idx] = json.dumps({
                     "core_method": "Extraction Error",
                     "dataset_used": "Extraction Error",
                     "key_findings": "Extraction Error"
-                })))
+                }, ensure_ascii=False)
 
-    results.sort(key=lambda x: x[0])
-    return [res[1] for res in results]
+    return results
